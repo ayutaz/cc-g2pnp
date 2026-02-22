@@ -19,9 +19,12 @@ Mapping from ttslearn symbols to CC-G2PnP:
 
 from __future__ import annotations
 
+import logging
 import re
 
 import pyopenjtalk
+
+logger = logging.getLogger(__name__)
 
 # ── Romaji → Katakana conversion table ───────────────────────────
 # pyopenjtalk outputs individual phonemes (e.g. "k", "o").
@@ -272,10 +275,12 @@ def _phonemes_to_mora(pp_symbols: list[str]) -> list[str]:
                         continue
 
             # Unmatched consonant — skip
+            logger.debug("Unmatched consonant skipped: %r (context: %r)", tok, pp_symbols[max(0, i-1):i+2])
             i += 1
             continue
 
         # Unknown token — skip
+        logger.debug("Unknown token skipped: %r (context: %r)", tok, pp_symbols[max(0, i-1):i+2])
         i += 1
 
     return result

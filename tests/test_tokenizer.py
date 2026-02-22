@@ -44,3 +44,32 @@ def test_token_ids_in_range(calm2_tokenizer):
     ids = calm2_tokenizer.encode(text, add_special_tokens=False)
     for token_id in ids:
         assert 0 <= token_id < EXPECTED_VOCAB_SIZE
+
+
+# ── G2PnPTokenizer wrapper tests ──
+
+
+def test_g2pnp_vocab_size(g2pnp_tokenizer):
+    """G2PnPTokenizer.vocab_size should return 65000."""
+    assert g2pnp_tokenizer.vocab_size == EXPECTED_VOCAB_SIZE
+
+
+def test_g2pnp_decode(g2pnp_tokenizer):
+    """G2PnPTokenizer.decode() round-trip should recover original text."""
+    text = "今日はいい天気"
+    ids = g2pnp_tokenizer.encode(text)
+    decoded = g2pnp_tokenizer.decode(ids)
+    assert len(decoded) > 0
+    assert "今日" in decoded or decoded.strip() == text.strip()
+
+
+def test_g2pnp_batch_encode(g2pnp_tokenizer):
+    """G2PnPTokenizer.batch_encode() should match individual encode results."""
+    texts = ["今日はいい天気", "明日は雨"]
+    results = g2pnp_tokenizer.batch_encode(texts)
+    assert len(results) == 2
+    assert all(isinstance(r, list) for r in results)
+    assert all(len(r) > 0 for r in results)
+    for text, batch_result in zip(texts, results):
+        single_result = g2pnp_tokenizer.encode(text)
+        assert batch_result == single_result

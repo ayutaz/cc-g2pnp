@@ -3,10 +3,10 @@
 from cc_g2pnp.data.vocabulary import PHONEMES, PROSODY_SYMBOLS, PnPVocabulary
 
 
-def test_vocab_size_range():
-    """Vocabulary size should be in a reasonable range (90-140)."""
+def test_vocab_size():
+    """Vocabulary size should be exactly 140 (blank + 134 mora + 3 prosody + unk + pad)."""
     vocab = PnPVocabulary()
-    assert 90 <= vocab.vocab_size <= 140
+    assert vocab.vocab_size == 140
 
 
 def test_blank_is_zero():
@@ -59,3 +59,16 @@ def test_no_duplicate_ids():
     vocab = PnPVocabulary()
     ids = list(vocab.token_to_id.values())
     assert len(ids) == len(set(ids))
+
+
+def test_loanword_tokens_encode_decode():
+    """Loanword tokens added for foreign words should encode/decode correctly."""
+    vocab = PnPVocabulary()
+    loanword_tokens = ["シェ", "ジェ", "チェ", "ディャ", "ディョ", "フュ"]
+    ids = vocab.encode(loanword_tokens)
+    # None should map to <unk>
+    for tok, tok_id in zip(loanword_tokens, ids):
+        assert tok_id != vocab.unk_id, f"{tok} mapped to <unk>"
+    # Roundtrip
+    decoded = vocab.decode(ids)
+    assert decoded == loanword_tokens

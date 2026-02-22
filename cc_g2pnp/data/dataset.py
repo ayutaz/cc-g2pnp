@@ -18,12 +18,12 @@ from cc_g2pnp.data.tokenizer import G2PnPTokenizer
 from cc_g2pnp.data.vocabulary import PnPVocabulary
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterable, Iterator
 
 logger = logging.getLogger(__name__)
 
 _REAZON_DATASET = "reazon-research/reazonspeech"
-_CTC_UPSAMPLE_FACTOR = 8  # Conformer subsampling ratio
+_CTC_UPSAMPLE_FACTOR = 8  # Token upsampling factor (BPE → Conformer input)
 
 
 class G2PnPDataset(IterableDataset):
@@ -40,7 +40,7 @@ class G2PnPDataset(IterableDataset):
         streaming: bool = True,
         *,
         max_input_len: int = 512,
-        min_input_len: int = 1,
+        min_input_len: int = 2,
     ) -> None:
         super().__init__()
         self._subset = subset
@@ -51,7 +51,7 @@ class G2PnPDataset(IterableDataset):
         self._tokenizer = G2PnPTokenizer()
         self._vocab = PnPVocabulary()
 
-    def _load_stream(self):
+    def _load_stream(self) -> Iterable[dict]:
         """Load ReazonSpeech text-only stream."""
         return load_dataset(
             _REAZON_DATASET,
@@ -62,24 +62,36 @@ class G2PnPDataset(IterableDataset):
         ).select_columns(["name", "transcription"])
 
     def __iter__(self) -> Iterator[dict]:
-        ds = self._load_stream()
-        for sample in ds:
+        total = 0
+        skipped_empty = 0
+        skipped_bpe = 0
+        skipped_length = 0
+        skipped_pnp = 0
+        skipped_ctc = 0
+        yielded = 0
+
+        for sample in self._load_stream():
+            total += 1
             text = sample.get("transcription", "")
             if not text or not text.strip():
+                skipped_empty += 1
                 continue
 
             # BPE tokenize
             bpe_ids = self._tokenizer.encode(text)
             if not bpe_ids:
+                skipped_bpe += 1
                 continue
 
             # Length filter
             if len(bpe_ids) < self._min_input_len or len(bpe_ids) > self._max_input_len:
+                skipped_length += 1
                 continue
 
             # PnP label generation
             pnp_tokens = generate_pnp_labels(text)
             if not pnp_tokens:
+                skipped_pnp += 1
                 continue
 
             pnp_ids = self._vocab.encode(pnp_tokens)
@@ -90,9 +102,25 @@ class G2PnPDataset(IterableDataset):
                     "CTC constraint violation: %d * %d < %d (text=%r)",
                     len(bpe_ids), _CTC_UPSAMPLE_FACTOR, len(pnp_ids), text[:40],
                 )
+                skipped_ctc += 1
                 continue
 
-            yield {
-                "input_ids": bpe_ids,
-                "labels": pnp_ids,
-            }
+            yielded += 1
+            if yielded % 10000 == 0:
+                logger.info(
+                    "Progress: yielded=%d, total=%d, "
+                    "skipped(empty=%d, bpe=%d, length=%d, pnp=%d, ctc=%d)",
+                    yielded, total,
+                    skipped_empty, skipped_bpe, skipped_length,
+                    skipped_pnp, skipped_ctc,
+                )
+
+            yield {"input_ids": bpe_ids, "labels": pnp_ids}
+
+        logger.info(
+            "Dataset complete: yielded=%d/%d (%.1f%%), "
+            "skipped(empty=%d, bpe=%d, length=%d, pnp=%d, ctc=%d)",
+            yielded, total, yielded / max(total, 1) * 100,
+            skipped_empty, skipped_bpe, skipped_length,
+            skipped_pnp, skipped_ctc,
+        )

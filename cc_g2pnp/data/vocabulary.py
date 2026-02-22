@@ -90,7 +90,7 @@ _YOON = [
 
 _LOANWORD = [
     # f-series
-    "ファ", "フィ", "フェ", "フォ",
+    "ファ", "フィ", "フェ", "フォ", "フュ",
     # w-series
     "ウィ", "ウェ", "ウォ",
     # v-series
@@ -101,8 +101,10 @@ _LOANWORD = [
     "ディ", "ドゥ",
     # ts-series (ツァ etc.)
     "ツァ", "ツィ", "ツェ", "ツォ",
+    # sh/ch/j-series (loanword e-vowel)
+    "シェ", "チェ", "ジェ",
     # dy-series
-    "デュ",
+    "デュ", "ディャ", "ディョ",
     # ty-series
     "テュ",
 ]

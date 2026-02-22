@@ -22,6 +22,7 @@ class DynamicBatchCollator:
 
     Returns a dict of tensors:
         ``input_ids``      : (B, T_max) — padded BPE token IDs
+        ``attention_mask`` : (B, T_max) — 1 for real tokens, 0 for padding
         ``labels``         : (B, U_max) — padded PnP label IDs
         ``input_lengths``  : (B,)       — original input lengths
         ``label_lengths``  : (B,)       — original label lengths
@@ -29,13 +30,16 @@ class DynamicBatchCollator:
 
     def __init__(
         self,
-        pad_token_id: int = 0,
+        pad_token_id: int = 1,
         label_pad_id: int = -100,
     ) -> None:
         self.pad_token_id = pad_token_id
         self.label_pad_id = label_pad_id
 
     def __call__(self, batch: list[dict]) -> dict[str, torch.Tensor]:
+        if not batch:
+            return {}
+
         input_ids_list = [sample["input_ids"] for sample in batch]
         labels_list = [sample["labels"] for sample in batch]
 
@@ -52,8 +56,11 @@ class DynamicBatchCollator:
             padded_inputs[i, : len(ids)] = torch.tensor(ids, dtype=torch.long)
             padded_labels[i, : len(lbls)] = torch.tensor(lbls, dtype=torch.long)
 
+        attention_mask = (padded_inputs != self.pad_token_id).long()
+
         return {
             "input_ids": padded_inputs,
+            "attention_mask": attention_mask,
             "labels": padded_labels,
             "input_lengths": input_lengths,
             "label_lengths": label_lengths,
