@@ -8,8 +8,8 @@ arXiv:2602.17157 (Shirahata & Yamamoto, LY Corporation, 2026) の再現実装計
 
 ```
 Phase 0: 環境構築・データ準備        ──┐
-Phase 1: データパイプライン           ──┤ 基盤
-Phase 2: モデルコア実装              ──┘
+Phase 1: データパイプライン           ──┤ 基盤  ✅ 完了
+Phase 2: モデルコア実装              ──┘       ← 次
 Phase 3: 学習パイプライン            ── 学習
 Phase 4: 推論・ストリーミング         ── 推論
 Phase 5: 評価                       ── 検証
@@ -34,34 +34,36 @@ Phase 6: アブレーション・最適化       ── 発展
 | 0.4 | ReazonSpeechデータのダウンロード | `all` config（14,960,911件）をstreaming modeで利用可能にする | データロードスクリプト |
 | 0.5 | プロジェクト構成の確定 | ディレクトリ構造、設定管理（Hydra）、ログ管理（W&B or TensorBoard）のセットアップ | プロジェクトスケルトン |
 
-### ディレクトリ構成案
+### ディレクトリ構成
 
 ```
 cc_g2pnp/
-├── configs/           # Hydra設定ファイル
-│   ├── model/
-│   ├── training/
-│   └── data/
-├── data/              # データ前処理
-│   ├── dataset.py
-│   ├── tokenizer.py
-│   └── pnp_labeler.py
-├── model/             # モデル定義
+├── data/              # データ前処理 (Phase 1 ✅)
+│   ├── vocabulary.py      # CTC語彙定義 (PnPVocabulary)
+│   ├── pnp_labeler.py     # PnPラベル生成 (HTS→カタカナ+韻律)
+│   ├── tokenizer.py       # CALM2 BPEトークナイザラッパー
+│   ├── dataset.py         # ReazonSpeech streaming IterableDataset
+│   └── collator.py        # Dynamic Batching + パディング
+├── model/             # モデル定義 (Phase 2)
 │   ├── conformer.py
 │   ├── attention.py
 │   ├── convolution.py
 │   └── ctc.py
-├── training/          # 学習ループ
+├── training/          # 学習ループ (Phase 3)
 │   ├── trainer.py
 │   └── scheduler.py
-├── inference/         # 推論・ストリーミング
+├── inference/         # 推論・ストリーミング (Phase 4)
 │   └── streaming.py
-├── evaluation/        # 評価
+├── evaluation/        # 評価 (Phase 5)
 │   └── metrics.py
-└── scripts/           # 実行スクリプト
-    ├── train.py
-    ├── evaluate.py
-    └── preprocess.py
+└── utils/
+tests/
+├── test_g2p.py            # pyopenjtalk/fugashi基本テスト (5件)
+├── test_tokenizer.py      # CALM2トークナイザテスト (6件)
+├── test_data_loading.py   # ReazonSpeechロードテスト (3件, network)
+├── test_vocabulary.py     # CTC語彙テスト (8件)
+├── test_pnp_labeler.py    # PnPラベル生成テスト (9件)
+└── test_pipeline.py       # 統合テスト (7件 + 1件network)
 ```
 
 ### 完了条件
@@ -88,13 +90,26 @@ cc_g2pnp/
 
 ### タスク
 
-| # | タスク | 詳細 | 難易度 |
-|---|---|---|---|
-| 1.1 | BPEトークン化モジュール | CALM2トークナイザで転写テキストをトークンID列に変換 | 低 |
-| 1.2 | PnPラベル生成モジュール | pyopenjtalk full-context label → 音素+韻律ラベル系列の変換。Dict-DNN未公開のため代替実装が必要（後述） | **高** |
-| 1.3 | CTC語彙の定義 | 約106クラス（blank + カタカナ音素 + 韻律記号`*`,`/`,`#` + unk + pad）の語彙マッピング | 中 |
-| 1.4 | データ前処理パイプライン | ReazonSpeech streaming → BPEトークン化 + PnPラベル生成 → 前処理済みデータのキャッシュ保存 | 中 |
-| 1.5 | Dynamic Batchingの実装 | 最大8,192トークン/ミニバッチのdynamic batching。可変長シーケンスのパディング処理 | 中 |
+| # | タスク | 詳細 | 難易度 | 状態 |
+|---|---|---|---|---|
+| 1.1 | BPEトークン化モジュール | CALM2トークナイザで転写テキストをトークンID列に変換 | 低 | ✅ |
+| 1.2 | PnPラベル生成モジュール | pyopenjtalk full-context label → 音素+韻律ラベル系列の変換。Dict-DNN未公開のため代替実装 | **高** | ✅ |
+| 1.3 | CTC語彙の定義 | 134クラス（blank + カタカナ128モーラ + 韻律記号`*`,`/`,`#` + unk + pad）の語彙マッピング | 中 | ✅ |
+| 1.4 | データ前処理パイプライン | ReazonSpeech streaming → BPEトークン化 + PnPラベル生成 → CTC制約チェック | 中 | ✅ |
+| 1.5 | Dynamic Batchingの実装 | 最大8,192トークン/ミニバッチのdynamic batching。可変長シーケンスのパディング処理 | 中 | ✅ |
+
+### 実装成果物
+
+| ファイル | 概要 |
+|---------|------|
+| `cc_g2pnp/data/vocabulary.py` | `PnPVocabulary` — 134トークン (blank + カタカナ128モーラ + 韻律3 + unk + pad) |
+| `cc_g2pnp/data/pnp_labeler.py` | `generate_pnp_labels()` — ttslearn pp_symbolsベース → CC-G2PnP記法に変換 |
+| `cc_g2pnp/data/tokenizer.py` | `G2PnPTokenizer` — CALM2 BPE薄ラッパー |
+| `cc_g2pnp/data/dataset.py` | `G2PnPDataset(IterableDataset)` — ReazonSpeech streaming + CTC制約チェック |
+| `cc_g2pnp/data/collator.py` | `DynamicBatchCollator` + `dynamic_batch_sampler` |
+| `tests/test_vocabulary.py` | 語彙テスト (8件) |
+| `tests/test_pnp_labeler.py` | PnPラベル生成テスト (9件) |
+| `tests/test_pipeline.py` | 統合テスト (7件 + 1件network) |
 
 ### Dict-DNN代替戦略（タスク1.2の詳細）
 
@@ -103,23 +118,43 @@ cc_g2pnp/
 ```
 テキスト
   → pyopenjtalk.extract_fullcontext()  # HTS full-context label取得
-  → 韻律情報抽出（ttslearn pp_symbols関数を参考）
-  → カタカナ音素 + 韻律記号(*, /, #) の系列
+  → _extract_pp_symbols()              # ttslearn pp_symbolsベースの韻律解析
+  → _phonemes_to_mora()                # ローマ字→カタカナモーラ変換 + 長音処理
+  → CC-G2PnP記法のトークン列            # *, /, # による韻律マーカー
 ```
 
-**具体的な抽出ロジック**:
-1. **音素**: full-context labelの中心音素(p3)を抽出し、ローマ字→カタカナモーラに変換
-2. **アクセント核(`*`)**: Aセクションのa2（モーラ位置）== a3（アクセント型）の位置に挿入
-3. **アクセント句境界(`/`)**: アクセント句の変化点に挿入
-4. **イントネーション句境界(`#`)**: イントネーション句の変化点、またはsil/pauの出現箇所に挿入
+**実装された抽出ロジック** (ttslearn pp_symbolsベース):
+1. **音素**: HTS full-context labelのp3（中心音素）を抽出
+2. **アクセント核 (`*`)**: ttslearnの`]`（pitch fall）条件 — `a1==0 && a2_next==a2+1 && a2!=f1`
+3. **アクセント句境界 (`/`)**: ttslearnの`#`条件 — `a3==1 && a2_next==1`
+4. **イントネーション句境界 (`#`)**: ttslearnの`_`（pause）— `pau` の出現箇所
+5. **長音符 (`ー`)**: 連続する同一母音を検出。`*`を跨いで追跡するが、`/`・`#`でリセット
+
+**出力例**:
+| 入力 | 出力 |
+|------|------|
+| 今日はいい天気 | `キョ * ー ワ / イ ー / テ * ン キ` |
+| 雨 (頭高型) | `ア * メ` |
+| 飴 (平板型) | `ア メ` |
+| お母さん | `オ カ * ー サ ン` |
 
 **リスク**: pyopenjtalkのルールベース韻律とDict-DNNの学習ベース韻律には差異がある。論文の数値との完全一致は困難だが、モデルアーキテクチャの検証には十分。
 
+### 計画からの変更点
+
+| 項目 | 計画 | 実装 | 理由 |
+|------|------|------|------|
+| 語彙サイズ | ~106クラス | **134クラス** | 外来語・拗音モーラを網羅した結果 |
+| CTC制約 | input_length >= target_length | **input_length * 8 >= target_length** | アップサンプリング係数8を考慮 |
+| キャッシュ保存 | 前処理結果のキャッシュ | **ストリーミングのみ** | メモリ効率優先、キャッシュは必要に応じて後で追加 |
+
 ### 完了条件
-- [ ] 任意の日本語テキストからBPEトークン列を生成できる
-- [ ] 任意の日本語テキストからPnPラベル列を生成できる
-- [ ] CTC制約（input_length >= target_length）を満たすデータ対が生成される
-- [ ] Dynamic batchingで効率的なミニバッチを構成できる
+- [x] 任意の日本語テキストからBPEトークン列を生成できる
+- [x] 任意の日本語テキストからPnPラベル列を生成できる
+- [x] CTC制約（input_length×8 >= target_length）を満たすデータ対が生成される
+- [x] Dynamic batchingで効率的なミニバッチを構成できる
+- [x] ruff lint エラーなし
+- [x] 全35テスト PASS（vocabulary×8, pnp_labeler×9, pipeline×7, G2P×5, tokenizer×6）
 
 ---
 
@@ -331,16 +366,16 @@ cc_g2pnp/
 ## タイムライン概要
 
 ```
-Phase 0: 環境構築・データ準備        ████░░░░░░░░░░░░░░░░░░░░
-Phase 1: データパイプライン           ░░░░████████░░░░░░░░░░░░
-Phase 2: モデルコア実装              ░░░░░░░░████████████░░░░
+Phase 0: 環境構築・データ準備        ████████ ✅ 完了
+Phase 1: データパイプライン           ████████ ✅ 完了
+Phase 2: モデルコア実装              ░░░░░░░░████████████░░░░  ← 次
 Phase 3: 学習パイプライン            ░░░░░░░░░░░░░░░░████████
 Phase 4: 推論・ストリーミング         ░░░░░░░░░░░░░░░░░░██████
 Phase 5: 評価                       ░░░░░░░░░░░░░░░░░░░░████
 Phase 6: アブレーション              ░░░░░░░░░░░░░░░░░░░░░░██
 ```
 
-- Phase 0-1 はPhase 2と部分的に並行可能
+- ~~Phase 0-1 はPhase 2と部分的に並行可能~~ → Phase 0-1 完了済み
 - Phase 3 はPhase 2の完了が前提
 - Phase 4-5 はPhase 3の学習済みモデルが前提
 - Phase 6 はPhase 5の評価基盤が前提
@@ -351,9 +386,9 @@ Phase 6: アブレーション              ░░░░░░░░░░░░
 
 | リスク | 影響度 | 発生Phase | 対策 |
 |---|---|---|---|
-| Dict-DNN韻律予測モデルが未公開 | **高** | Phase 1 | pyopenjtalkのfull-context label解析で代替（ttslearn pp_symbols参考）。論文の数値との完全一致は困難だが、アーキテクチャ検証には十分 |
+| Dict-DNN韻律予測モデルが未公開 | ~~高~~ 対応済 | Phase 1 | pyopenjtalkのfull-context label解析で代替実装完了（ttslearn pp_symbolsベース → CC-G2PnP記法変換）。論文の数値との完全一致は困難だが、アーキテクチャ検証には十分 |
 | 6D-Eval評価データが未公開 | **高** | Phase 5 | pyopenjtalkベースの自動評価 → 複数ドメインテキスト収集 → 少量手動アノテーション の段階的アプローチ |
-| 1500万件のデータ前処理が膨大 | 中 | Phase 1 | HuggingFace datasets streaming + 前処理結果のキャッシュ。マルチプロセス並列化 |
+| 1500万件のデータ前処理が膨大 | 中 | Phase 1 | HuggingFace datasets streamingで実装済み。キャッシュ・並列化は必要に応じて追加 |
 | 1.2Mステップの学習に長時間 | 中 | Phase 3 | AMP (FP16/BF16) + DDP + gradient checkpointing。まず1%データで検証 |
 | CTC収束不安定 | 中 | Phase 3 | `zero_infinity=True`、勾配クリッピング、小データでの事前検証 |
 | Self-conditioned CTCのマルチGPU問題 | 中 | Phase 3 | ESPnet Issue #4031参照。シングルGPUで先に検証してからDDPに移行 |
@@ -361,18 +396,18 @@ Phase 6: アブレーション              ░░░░░░░░░░░░
 | pyopenjtalkのインストール問題 | ~~中~~ 解決済 | Phase 0 | `pyopenjtalk-plus>=0.4.1`（Python 3.13 Windows対応フォーク）を採用 |
 | NANSY-TTS未公開でMOS評価困難 | 低 | Phase 6 | OSS TTS（VITS2等）で代替、または客観指標（UTMOS）で代替 |
 | Conformerのヘッド数/カーネルサイズが論文未記載 | 低 | Phase 2 | Conformer標準値（heads=8, kernel=31）で開始 |
-| ReazonSpeechデータのフィルタリング条件不明 | 低 | Phase 1 | 全データを使用して開始。必要に応じて短すぎる/長すぎるサンプルを除外 |
+| ReazonSpeechデータのフィルタリング条件不明 | 低 | Phase 1 | 全データを使用。CTC制約違反・空テキスト・極端な長さのサンプルは自動除外済み |
 
 ---
 
 ## マイルストーン
 
-| マイルストーン | Phase | 検証基準 |
-|---|---|---|
-| **M0: 環境Ready** | 0 | 全ライブラリのimport成功、トークナイザ動作確認 |
-| **M1: データパイプライン完成** | 1 | 任意のテキスト → (BPEトークン列, PnPラベル列) のペア生成 |
-| **M2: モデルForwardパス** | 2 | ランダム入力でforward pass完了、出力形状が正しい |
-| **M3: 小規模学習収束** | 3 | ReazonSpeech 1%でCTC損失が単調減少 |
-| **M4: ストリーミング推論動作** | 4 | チャンク単位の逐次推論でPnPラベル出力 |
-| **M5: 評価メトリクス計測** | 5 | 全6メトリクスの計算、相対的な性能傾向が論文と一致 |
-| **M6: フルスケール学習完了** | 3+6 | 100%データ・1.2Mステップでの学習完了、PnP CER ≈ 1.79（代替評価データ上） |
+| マイルストーン | Phase | 検証基準 | 状態 |
+|---|---|---|---|
+| **M0: 環境Ready** | 0 | 全ライブラリのimport成功、トークナイザ動作確認 | ✅ 達成 |
+| **M1: データパイプライン完成** | 1 | 任意のテキスト → (BPEトークン列, PnPラベル列) のペア生成 | ✅ 達成 |
+| **M2: モデルForwardパス** | 2 | ランダム入力でforward pass完了、出力形状が正しい | |
+| **M3: 小規模学習収束** | 3 | ReazonSpeech 1%でCTC損失が単調減少 | |
+| **M4: ストリーミング推論動作** | 4 | チャンク単位の逐次推論でPnPラベル出力 | |
+| **M5: 評価メトリクス計測** | 5 | 全6メトリクスの計算、相対的な性能傾向が論文と一致 | |
+| **M6: フルスケール学習完了** | 3+6 | 100%データ・1.2Mステップでの学習完了、PnP CER ≈ 1.79（代替評価データ上） | |
