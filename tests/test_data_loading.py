@@ -6,14 +6,14 @@ import pytest
 from datasets import load_dataset
 
 REAZON_DATASET = "reazon-research/reazonspeech"
-REAZON_SUBSET = "tiny"
+REAZON_SUBSET = "all"
 
 
 def _load_reazonspeech_text(streaming=True):
     """Load ReazonSpeech dataset selecting only text columns to avoid audio decoding."""
-    return load_dataset(REAZON_DATASET, REAZON_SUBSET, split="train", streaming=streaming).select_columns(
-        ["name", "transcription"]
-    )
+    return load_dataset(
+        REAZON_DATASET, REAZON_SUBSET, split="train", streaming=streaming, trust_remote_code=True
+    ).select_columns(["name", "transcription"])
 
 
 @pytest.mark.network
