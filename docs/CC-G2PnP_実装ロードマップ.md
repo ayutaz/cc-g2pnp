@@ -28,9 +28,9 @@ Phase 6: アブレーション・最適化       ── 発展
 
 | # | タスク | 詳細 | 成果物 |
 |---|---|---|---|
-| 0.1 | Python環境構築 | Python 3.10+, CUDA対応PyTorch環境 | `pyproject.toml` or `requirements.txt` |
-| 0.2 | 依存ライブラリのインストール | torch>=2.0, transformers>=4.35, datasets>=2.14, fugashi[unidic], pyopenjtalk>=0.3, jiwer>=3.0, hydra-core | インストール確認スクリプト |
-| 0.3 | CALM2トークナイザの動作確認 | `cyberagent/calm2-7b-chat` のBPEトークナイザ（語彙65,024）をロードし基本動作を確認 | トークナイザのテストコード |
+| 0.1 | Python環境構築 | Python 3.13, CUDA対応PyTorch環境, uv 0.9.2 | `pyproject.toml` (hatchling) |
+| 0.2 | 依存ライブラリのインストール | torch>=2.0, transformers>=4.35, datasets>=2.14&lt;4.0, fugashi+unidic, pyopenjtalk-plus>=0.4.1, jiwer>=3.0 | インストール確認スクリプト |
+| 0.3 | CALM2トークナイザの動作確認 | `cyberagent/calm2-7b` のBPEトークナイザ（語彙65,000）をロードし基本動作を確認 | トークナイザのテストコード |
 | 0.4 | ReazonSpeechデータのダウンロード | `all` config（14,960,911件）をstreaming modeで利用可能にする | データロードスクリプト |
 | 0.5 | プロジェクト構成の確定 | ディレクトリ構造、設定管理（Hydra）、ログ管理（W&B or TensorBoard）のセットアップ | プロジェクトスケルトン |
 
@@ -65,9 +65,20 @@ cc_g2pnp/
 ```
 
 ### 完了条件
-- [ ] 全ライブラリがインストールされ `import` 可能
-- [ ] CALM2トークナイザで日本語テキストをトークン化できる
-- [ ] ReazonSpeechから転写テキストをstreaming取得できる
+- [x] 全ライブラリがインストールされ `import` 可能
+- [x] CALM2トークナイザで日本語テキストをトークン化できる（vocab_size=65,000確認済み）
+- [x] ReazonSpeechから転写テキストをstreaming取得できる（"all" subset + select_columns）
+- [x] ruff エラーなし
+- [x] 全14テスト PASS（G2P×5, トークナイザ×6, データ読込×3）
+
+### 計画からの変更点
+| 項目 | 計画 | 実装 | 理由 |
+|------|------|------|------|
+| Python | 3.10+ | **3.13** | 最新版を採用 |
+| vocab_size | 65,024 | **65,000** | CALM2実測値 |
+| pyopenjtalk | pyopenjtalk>=0.3 | **pyopenjtalk-plus>=0.4.1** | Python 3.13 Windows対応フォーク |
+| datasets | >=2.14.0 | **>=2.14.0,<4.0.0** | v4.0+でtrust_remote_code廃止 |
+| モデル名 | calm2-7b-chat | **calm2-7b** | トークナイザ共通 |
 
 ---
 
@@ -135,7 +146,7 @@ cc_g2pnp/
 
 | # | タスク | 詳細 | 難易度 |
 |---|---|---|---|
-| 2.1 | Embedding + Token Upsampling | `Embedding(65024, 512)` + Repeat Upsample (×8)。入力 [B, T] → [B, T×8, 512] | 低 |
+| 2.1 | Embedding + Token Upsampling | `Embedding(65000, 512)` + Repeat Upsample (×8)。入力 [B, T] → [B, T×8, 512] | 低 |
 | 2.2 | Causal Convolution Module | LayerNorm → Pointwise Conv(512→1024) → GLU → CausalDepthwiseConv1D(kernel=31) → BatchNorm → Swish → Pointwise Conv(512→512) → Dropout。左パディング `F.pad(x, (kernel_size-1, 0))` | 中 |
 | 2.3 | Chunk-aware Streaming Attention | Multi-Head Self-Attention (heads=8 ※推定) + 相対位置エンコーディング（※推定）+ chunk-aware attentionマスク生成。パラメータ: C（チャンクサイズ）, P（過去コンテキスト=10） | **高** |
 | 2.4 | Feed-Forward Module | LayerNorm → Linear(512→2048) → Swish → Dropout → Linear(2048→512) → Dropout。Half-step residual (factor=0.5) | 低 |
@@ -347,7 +358,7 @@ Phase 6: アブレーション              ░░░░░░░░░░░░
 | CTC収束不安定 | 中 | Phase 3 | `zero_infinity=True`、勾配クリッピング、小データでの事前検証 |
 | Self-conditioned CTCのマルチGPU問題 | 中 | Phase 3 | ESPnet Issue #4031参照。シングルGPUで先に検証してからDDPに移行 |
 | Chunk-aware Attentionのマスク生成の複雑さ | 中 | Phase 2 | NeMoの実装を参考に、可視化テストで正当性を確認 |
-| pyopenjtalkのインストール問題 | 中 | Phase 0 | Cython互換性、CMake要件に注意。`--no-build-isolation` の活用 |
+| pyopenjtalkのインストール問題 | ~~中~~ 解決済 | Phase 0 | `pyopenjtalk-plus>=0.4.1`（Python 3.13 Windows対応フォーク）を採用 |
 | NANSY-TTS未公開でMOS評価困難 | 低 | Phase 6 | OSS TTS（VITS2等）で代替、または客観指標（UTMOS）で代替 |
 | Conformerのヘッド数/カーネルサイズが論文未記載 | 低 | Phase 2 | Conformer標準値（heads=8, kernel=31）で開始 |
 | ReazonSpeechデータのフィルタリング条件不明 | 低 | Phase 1 | 全データを使用して開始。必要に応じて短すぎる/長すぎるサンプルを除外 |
