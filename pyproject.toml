@@ -9,12 +9,13 @@ dependencies = [
     "jiwer>=3.0.0",
     "numpy>=2.4.2",
     "pyopenjtalk-plus>=0.4.1",
-    "tensorboard>=2.14.0",
+    "python-dotenv>=1.0.0",
     "torch>=2.0.0",
     "torchaudio>=2.0.0",
     "tqdm>=4.67.3",
     "transformers>=4.35.0",
     "unidic>=1.1.0",
+    "wandb>=0.15.0",
 ]
 
 [project.scripts]

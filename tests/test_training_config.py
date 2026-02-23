@@ -25,8 +25,7 @@ class TestTrainingConfigDefaults:
         assert cfg.save_every_n_steps == 10_000
         assert cfg.keep_last_n == 5
         assert cfg.log_every_n_steps == 100
-        assert cfg.use_wandb is False
-        assert cfg.use_tensorboard is True
+        assert cfg.use_wandb is True
         assert cfg.project_name == "cc-g2pnp"
         assert cfg.run_name is None
         assert cfg.use_amp is True
@@ -61,7 +60,6 @@ class TestTrainingConfigCustom:
             keep_last_n=3,
             log_every_n_steps=50,
             use_wandb=True,
-            use_tensorboard=False,
             project_name="test-project",
             run_name="run-001",
             use_amp=False,
@@ -85,7 +83,6 @@ class TestTrainingConfigCustom:
         assert cfg.keep_last_n == 3
         assert cfg.log_every_n_steps == 50
         assert cfg.use_wandb is True
-        assert cfg.use_tensorboard is False
         assert cfg.project_name == "test-project"
         assert cfg.run_name == "run-001"
         assert cfg.use_amp is False

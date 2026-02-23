@@ -227,7 +227,6 @@ class TestTrainerE2EMinimal:
         training_config = TrainingConfig(
             max_steps=3,
             use_amp=False,
-            use_tensorboard=False,
             use_wandb=False,
             checkpoint_dir=str(tmp_path / "ckpt"),  # type: ignore[operator]
             save_every_n_steps=100,
