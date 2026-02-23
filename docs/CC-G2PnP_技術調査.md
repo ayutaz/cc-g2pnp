@@ -432,12 +432,14 @@ CC-G2PnP論文のPnP系列生成の参考実装として有用。
 - **CC-G2PnPとの関連**: U2フレームワーク（streaming/non-streaming統一）
 - **再現実装での有用性**: 統一アーキテクチャの設計パターンの参考
 
-### 4.5 推奨方針 → 実装完了
+### 4.5 推奨方針 → 実装完了 (Phase 2 モデル + Phase 3 学習)
 
 既存フレームワークを**参考**にしつつ、**PyTorchベースでスクラッチ実装**済み:
 - NeMoからchunk-aware streamingのマスク生成パターンを参考 → `create_chunk_mask`/`create_mla_mask` (vectorized)
 - ESPnetからSelf-conditioned CTCの実装を参考 → `ConformerEncoder` に中間CTC+フィードバック実装
+- ESPnet Issue #4031を参考にDDP設定 → `find_unused_parameters=True`
 - SpeechBrainからDynamic Chunk Trainingのパターンを参考
+- 学習パイプライン: Trainer + TrainingConfig + AdamW (decay/no_decay) + ExponentialLR + CheckpointManager + DDP + AMP
 - 外部フレームワークへの依存なし（PyTorch標準のみ）、論文仕様を忠実に再現
 
 ---
@@ -479,7 +481,7 @@ CC-G2PnP論文のPnP系列生成の参考実装として有用。
 
 ### 5.4 論文コードの公開状況
 
-- **CC-G2PnPのコードは未公開**（2026年2月時点、提出直後のため）→ **本リポジトリで再現実装中** (Phase 2完了: モデルコア84M params)
+- **CC-G2PnPのコードは未公開**（2026年2月時点、提出直後のため）→ **本リポジトリで再現実装中** (Phase 3完了: モデルコア84M params + 学習パイプライン)
 - **Dict-DNN韻律予測モデルも未公開**（Park et al., Interspeech 2022）→ pyopenjtalk full-context label解析で代替実装済み
 - **6D-Eval評価データセットも未公開**
 - 今後r9y9のGitHubリポジトリで公開される可能性あり
@@ -633,20 +635,27 @@ ID 139:     <pad>
 | 検証データ | 4,802件 |
 | Dynamic batching | 最大8,192トークン/ミニバッチ |
 | Optimizer | AdamW (lr=1e-4, weight_decay=0.01, betas=(0.9, 0.98)) ※論文未記載。Conformer学習の一般的な設定を採用 |
-| 学習率スケジュール | ExponentialLR: 1e-4 → 1e-5（1.2Mステップ） |
+| 学習率スケジュール | ExponentialLR: 1e-4 → 1e-5（1.2Mステップ） + LinearLR warmup (10,000 steps) |
 | 学習ステップ数 | 1,200,000 |
+| Warmup | 10,000 steps (LinearLR → ExponentialLR via SequentialLR) |
+| 勾配クリッピング | max_norm=1.0 ※論文未記載 |
+| AMP | bfloat16 (default) / float16 |
 | 中間CTC損失 | 第2, 4, 6層（重み = 最終CTCの1/3） |
 | トークナイザ | CALM2-7B-Chat BPE（語彙65,000） |
 | アップサンプリング係数 | 8 |
 
 ### 8.2 学習率スケジュール
 
-ExponentialLR: γ = (1e-5 / 1e-4)^(1/1,200,000) ≈ 0.9999981
+ExponentialLR: γ = (final_lr / lr)^(1 / (total_steps - warmup_steps)) 自動計算
 
 ```python
 # ※論文未記載のパラメータ: Optimizer種類(AdamW), weight_decay, betasはConformer学習の一般的な設定を採用
+# 実装: TrainingConfig.scheduler_gamma プロパティで自動計算
 optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=0.01, betas=(0.9, 0.98))
-scheduler = ExponentialLR(optimizer, gamma=0.9999981)
+# decay/no_decay 2グループ: LayerNorm・biasはweight decay除外
+warmup_scheduler = LinearLR(optimizer, start_factor=1e-8/1e-4, total_iters=10000)
+decay_scheduler = ExponentialLR(optimizer, gamma=0.9999981)
+scheduler = SequentialLR(optimizer, [warmup_scheduler, decay_scheduler], milestones=[10000])
 ```
 
 ### 8.3 損失関数
@@ -727,10 +736,8 @@ fugashi[unidic]             # MeCab + UniDic (形態素解析)
 pyopenjtalk-plus>=0.4.1     # G2P + Full-context labels（Python 3.13 Windows対応フォーク）
 
 # Training
-hydra-core>=1.3.0           # 設定管理
-omegaconf>=2.3.0            # Hydra依存
-wandb>=0.16.0               # 学習監視
-tensorboard>=2.15.0         # 学習監視（代替）
+tensorboard>=2.14.0         # 学習監視（実装済み）
+wandb>=0.16.0               # 学習監視（オプション、未インストールでも動作）
 
 # Evaluation
 jiwer>=3.0.0                # CER/WER計算
@@ -748,8 +755,8 @@ tqdm, numpy, pandas
 | Dict-DNN韻律予測モデルが入手不可 | ~~高~~ **対応済** | pyopenjtalkのfull-context label解析で代替実装済み（ttslearnのpp_symbols関数ベース → CC-G2PnP記法変換） |
 | 6D-Eval評価データが非公開 | **高** | 独自テストセットで代替（複数ドメインのテキストに手動韻律アノテーション）、または著者に問い合わせ |
 | 1500万件のデータ前処理が膨大 | 中 | HuggingFace datasetsのstreaming + 前処理結果のキャッシュ。並列処理で高速化 |
-| 1.2Mステップの学習時間 | 中 | AMP (FP16) + マルチGPU (DDP) + gradient checkpointing |
-| CTC収束不安定 | 中 | `zero_infinity=True`, gradient clipping (max_norm=1.0), warmup ※論文未記載。CTC学習の一般的な安定化テクニック |
+| 1.2Mステップの学習時間 | 中 | AMP (bfloat16/float16) + マルチGPU (DDP) **実装済み** |
+| CTC収束不安定 | ~~中~~ **対策済** | `zero_infinity=True`, gradient clipping (max_norm=1.0), LinearLR warmup (10,000 steps) **全て実装済み** |
 | pyopenjtalkのインストール問題 | ~~中~~ **解決済** | `pyopenjtalk-plus>=0.4.1`（Python 3.13 Windows対応フォーク）を使用。API互換 |
 | ReazonSpeechデータ量の不一致 | 低 | 論文の14,960,911件は`all`設定からフィルタリングされた可能性あり。フィルタリング条件の推定が必要 |
 | CALM2トークナイザの語彙サイズ | ~~—~~ **確認済** | **65,000** であることを確認済み（論文記載の65,024とは異なる） |
