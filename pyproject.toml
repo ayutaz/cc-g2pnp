@@ -41,7 +41,7 @@ select = [
     "TCH",   # flake8-type-checking
     "RUF",   # ruff-specific
 ]
-ignore = ["E501", "RUF001"]  # RUF001: katakana chars are intentional in this project
+ignore = ["E501", "RUF001", "N801"]  # RUF001: katakana chars; N801: CC_G2PnP naming convention
 
 [tool.ruff.lint.isort]
 known-first-party = ["cc_g2pnp"]

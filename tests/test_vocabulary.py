@@ -67,7 +67,7 @@ def test_loanword_tokens_encode_decode():
     loanword_tokens = ["シェ", "ジェ", "チェ", "ディャ", "ディョ", "フュ"]
     ids = vocab.encode(loanword_tokens)
     # None should map to <unk>
-    for tok, tok_id in zip(loanword_tokens, ids):
+    for tok, tok_id in zip(loanword_tokens, ids, strict=True):
         assert tok_id != vocab.unk_id, f"{tok} mapped to <unk>"
     # Roundtrip
     decoded = vocab.decode(ids)

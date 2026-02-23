@@ -70,6 +70,6 @@ def test_g2pnp_batch_encode(g2pnp_tokenizer):
     assert len(results) == 2
     assert all(isinstance(r, list) for r in results)
     assert all(len(r) > 0 for r in results)
-    for text, batch_result in zip(texts, results):
+    for text, batch_result in zip(texts, results, strict=True):
         single_result = g2pnp_tokenizer.encode(text)
         assert batch_result == single_result

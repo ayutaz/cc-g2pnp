@@ -8,7 +8,6 @@ import pytest
 
 from cc_g2pnp.data.dataset import G2PnPDataset
 
-
 # ── Helper ───────────────────────────────────────────────────────
 
 
