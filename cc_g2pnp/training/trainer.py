@@ -271,8 +271,11 @@ class Trainer:
                 # チェックポイント保存
                 if step > 0 and step % config.save_every_n_steps == 0:
                     if is_main_process():
-                        self._save_checkpoint(step, step_metrics)
-                    # DDP: 全ランクが barrier を呼ぶ必要がある
+                        try:
+                            self._save_checkpoint(step, step_metrics)
+                        except Exception:
+                            logger.exception("Checkpoint save failed at step %d", step)
+                    # DDP: 全ランクが barrier を呼ぶ必要がある (例外時も到達)
                     if config.use_ddp:
                         import torch.distributed as _dist
 
@@ -283,8 +286,16 @@ class Trainer:
 
             # 最終チェックポイント保存
             if is_main_process():
-                self._save_checkpoint(effective_steps)
+                try:
+                    self._save_checkpoint(effective_steps)
+                except Exception:
+                    logger.exception("Final checkpoint save failed at step %d", effective_steps)
                 logger.info("Training complete at step %d", effective_steps)
+            # DDP: 最終保存後も全ランクで同期してから cleanup に進む
+            if config.use_ddp:
+                import torch.distributed as _dist
+
+                _dist.barrier()
 
         finally:
             if hasattr(data_iter, "close"):
