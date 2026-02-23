@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 from torch import nn
@@ -31,12 +33,24 @@ class DummyModel(nn.Module):
         self.pred_ids = pred_ids
         # Dummy parameter so PyTorch treats this as a module
         self._dummy = nn.Parameter(torch.zeros(1))
+        self.config = SimpleNamespace(blank_id=0)
 
     def forward(self, input_ids, input_lengths, targets=None, target_lengths=None):
-        return {"loss": torch.tensor(self.loss_value)}
+        batch_size = input_ids.size(0)
+        log_probs = self._build_log_probs(batch_size)
+        return {"loss": torch.tensor(self.loss_value), "log_probs": log_probs}
 
-    def inference(self, input_ids, input_lengths):
-        return self.pred_ids
+    def _build_log_probs(self, batch_size):
+        """Build log_probs so that greedy_decode returns self.pred_ids."""
+        max_len = max((len(p) for p in self.pred_ids), default=0) + 1
+        num_classes = 140
+        lp = torch.full((batch_size, max_len, num_classes), -100.0)
+        for b in range(min(batch_size, len(self.pred_ids))):
+            for t, pid in enumerate(self.pred_ids[b]):
+                lp[b, t, pid] = 0.0
+            for t in range(len(self.pred_ids[b]), max_len):
+                lp[b, t, 0] = 0.0
+        return lp
 
 
 def _make_batch(
@@ -233,14 +247,16 @@ class TestEvaluator:
             def __init__(self):
                 super().__init__()
                 self._dummy = nn.Parameter(torch.zeros(1))
+                self.config = SimpleNamespace(blank_id=0)
 
             def forward(self, input_ids, input_lengths, targets=None, target_lengths=None):
                 training_states.append(self.training)
-                return {"loss": torch.tensor(1.0)}
-
-            def inference(self, input_ids, input_lengths):
-                training_states.append(self.training)
-                return [[1]]
+                batch_size = input_ids.size(0)
+                # log_probs that decode to [[1]]
+                lp = torch.full((batch_size, 2, 140), -100.0)
+                lp[:, 0, 1] = 0.0
+                lp[:, 1, 0] = 0.0
+                return {"loss": torch.tensor(1.0), "log_probs": lp}
 
         model = TrackingModel()
         model.train()
@@ -268,14 +284,16 @@ class TestEvaluator:
             def __init__(self):
                 super().__init__()
                 self._dummy = nn.Parameter(torch.zeros(1))
+                self.config = SimpleNamespace(blank_id=0)
 
             def forward(self, input_ids, input_lengths, targets=None, target_lengths=None):
                 loss = losses[call_count[0]]
                 call_count[0] += 1
-                return {"loss": torch.tensor(loss)}
-
-            def inference(self, input_ids, input_lengths):
-                return [[1]]
+                batch_size = input_ids.size(0)
+                lp = torch.full((batch_size, 2, 140), -100.0)
+                lp[:, 0, 1] = 0.0
+                lp[:, 1, 0] = 0.0
+                return {"loss": torch.tensor(loss), "log_probs": lp}
 
         model = VaryingLossModel()
         evaluator = Evaluator(vocabulary, device)
@@ -307,14 +325,15 @@ class TestEvaluator:
             def __init__(self):
                 super().__init__()
                 self._dummy = nn.Parameter(torch.zeros(1))
+                self.config = SimpleNamespace(blank_id=0)
 
             def forward(self, input_ids, input_lengths, targets=None, target_lengths=None):
                 grad_enabled_states.append(torch.is_grad_enabled())
-                return {"loss": torch.tensor(1.0)}
-
-            def inference(self, input_ids, input_lengths):
-                grad_enabled_states.append(torch.is_grad_enabled())
-                return [[1]]
+                batch_size = input_ids.size(0)
+                lp = torch.full((batch_size, 2, 140), -100.0)
+                lp[:, 0, 1] = 0.0
+                lp[:, 1, 0] = 0.0
+                return {"loss": torch.tensor(1.0), "log_probs": lp}
 
         model = GradCheckModel()
         evaluator = Evaluator(vocabulary, device)

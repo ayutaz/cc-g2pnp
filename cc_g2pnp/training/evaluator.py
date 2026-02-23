@@ -8,6 +8,8 @@ import jiwer
 import torch
 from torch import nn
 
+from cc_g2pnp.model.ctc_decoder import greedy_decode
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -89,6 +91,9 @@ class Evaluator:
         total_cer = 0.0
         total_samples = 0
 
+        raw_model = model.module if hasattr(model, "module") else model
+        blank_id = raw_model.config.blank_id
+
         for num_batches, batch in enumerate(val_batches):
             if max_batches is not None and num_batches >= max_batches:
                 break
@@ -108,7 +113,7 @@ class Evaluator:
             batch_size = input_ids.size(0)
             total_loss += result["loss"].item() * batch_size
 
-            predictions = model.inference(input_ids, input_lengths)
+            predictions = greedy_decode(result["log_probs"], blank_id=blank_id)
             batch_cer = _compute_cer(
                 predictions, labels, label_lengths, self.vocabulary,
             )

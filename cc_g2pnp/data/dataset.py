@@ -50,7 +50,7 @@ class G2PnPDataset(IterableDataset):
         self._min_input_len = min_input_len
         self._shuffle_seed = shuffle_seed
 
-        self._tokenizer = G2PnPTokenizer()
+        self._tokenizer = G2PnPTokenizer.get_instance()
         self._vocab = PnPVocabulary()
 
     def _load_stream(self) -> Iterable[dict]:

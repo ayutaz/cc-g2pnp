@@ -6,6 +6,8 @@ encapsulating ``transformers.AutoTokenizer`` for the CyberAgent CALM2 model.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from transformers import AutoTokenizer
 
 _DEFAULT_MODEL = "cyberagent/calm2-7b"
@@ -14,10 +16,24 @@ _DEFAULT_MODEL = "cyberagent/calm2-7b"
 class G2PnPTokenizer:
     """CALM2 BPE tokenizer wrapper for CC-G2PnP."""
 
+    _cache: ClassVar[dict[str, G2PnPTokenizer]] = {}
+
     def __init__(self, model_name: str = _DEFAULT_MODEL) -> None:
         self._tokenizer = AutoTokenizer.from_pretrained(
             model_name, trust_remote_code=True
         )
+
+    @classmethod
+    def get_instance(cls, model_name: str = _DEFAULT_MODEL) -> G2PnPTokenizer:
+        """Return a cached tokenizer instance (singleton per model_name)."""
+        if model_name not in cls._cache:
+            cls._cache[model_name] = cls(model_name)
+        return cls._cache[model_name]
+
+    @classmethod
+    def clear_cache(cls) -> None:
+        """Clear the singleton cache (for test isolation)."""
+        cls._cache.clear()
 
     @property
     def vocab_size(self) -> int:

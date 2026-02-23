@@ -1,5 +1,7 @@
 """Tests for CALM2 tokenizer."""
 
+from cc_g2pnp.data.tokenizer import G2PnPTokenizer
+
 EXPECTED_VOCAB_SIZE = 65000
 
 
@@ -73,3 +75,29 @@ def test_g2pnp_batch_encode(g2pnp_tokenizer):
     for text, batch_result in zip(texts, results, strict=True):
         single_result = g2pnp_tokenizer.encode(text)
         assert batch_result == single_result
+
+
+# ── get_instance / clear_cache tests ──
+
+
+def test_get_instance_returns_same_object():
+    """get_instance() should return the same object for the same model_name."""
+    G2PnPTokenizer.clear_cache()
+    try:
+        t1 = G2PnPTokenizer.get_instance()
+        t2 = G2PnPTokenizer.get_instance()
+        assert t1 is t2
+    finally:
+        G2PnPTokenizer.clear_cache()
+
+
+def test_clear_cache_resets_singleton():
+    """clear_cache() should cause get_instance() to create a new object."""
+    G2PnPTokenizer.clear_cache()
+    try:
+        t1 = G2PnPTokenizer.get_instance()
+        G2PnPTokenizer.clear_cache()
+        t2 = G2PnPTokenizer.get_instance()
+        assert t1 is not t2
+    finally:
+        G2PnPTokenizer.clear_cache()

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import queue
 import random
+import threading
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -39,6 +41,48 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _VAL_NUM_SAMPLES_KEY = frozenset({"val_num_samples"})
+
+
+class _PrefetchIterator:
+    """Background-thread prefetch wrapper for a batch iterator."""
+
+    def __init__(self, base_iterator, prefetch_count: int = 2, pin_memory: bool = False):
+        self._base = base_iterator
+        self._queue: queue.Queue = queue.Queue(maxsize=prefetch_count)
+        self._pin_memory = pin_memory
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._worker, daemon=True)
+        self._thread.start()
+
+    def _worker(self):
+        try:
+            for batch in self._base:
+                if self._stop.is_set():
+                    break
+                if self._pin_memory:
+                    batch = {
+                        k: v.pin_memory() if isinstance(v, torch.Tensor) else v
+                        for k, v in batch.items()
+                    }
+                self._queue.put(batch)
+        except Exception as exc:
+            self._queue.put(exc)
+        finally:
+            self._queue.put(None)  # sentinel
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        item = self._queue.get()
+        if item is None:
+            raise StopIteration
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def close(self):
+        self._stop.set()
 
 
 class Trainer:
@@ -103,6 +147,7 @@ class Trainer:
                 and self.device.type == "cuda"
             ),
         )
+        self._use_scaler = self.scaler.is_enabled()
 
         # 8. CheckpointManager 構築
         self.checkpoint_manager = CheckpointManager(
@@ -167,6 +212,8 @@ class Trainer:
                 except StopIteration:
                     logger.info("Epoch ended at step %d, restarting data iterator", step)
                     self._epoch += 1
+                    if hasattr(data_iter, "close"):
+                        data_iter.close()
                     data_iter = self._create_data_iterator()
                     batch = next(data_iter)
 
@@ -243,6 +290,8 @@ class Trainer:
                 logger.info("Training complete at step %d", effective_steps)
 
         finally:
+            if hasattr(data_iter, "close"):
+                data_iter.close()
             if pbar is not None:
                 pbar.close()
             if self.logger is not None:
@@ -263,10 +312,10 @@ class Trainer:
         config = self.training_config
 
         # バッチをデバイスに転送
-        input_ids = batch["input_ids"].to(self.device)
-        input_lengths = batch["input_lengths"].to(self.device)
-        labels = batch["labels"].to(self.device)
-        label_lengths = batch["label_lengths"].to(self.device)
+        input_ids = batch["input_ids"].to(self.device, non_blocking=True)
+        input_lengths = batch["input_lengths"].to(self.device, non_blocking=True)
+        labels = batch["labels"].to(self.device, non_blocking=True)
+        label_lengths = batch["label_lengths"].to(self.device, non_blocking=True)
 
         # AMP context
         with torch.amp.autocast(
@@ -282,21 +331,23 @@ class Trainer:
             )
             loss = result["loss"]
 
-        # Backward
-        self.scaler.scale(loss).backward()
+        # Backward + optimizer step
+        if self._use_scaler:
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)
+            grad_norm = nn.utils.clip_grad_norm_(
+                self.model.parameters(), config.max_grad_norm,
+            )
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            loss.backward()
+            grad_norm = nn.utils.clip_grad_norm_(
+                self.model.parameters(), config.max_grad_norm,
+            )
+            self.optimizer.step()
 
-        # Gradient unscale + clipping
-        self.scaler.unscale_(self.optimizer)
-        grad_norm = nn.utils.clip_grad_norm_(
-            self.model.parameters(), config.max_grad_norm,
-        )
-
-        # Optimizer step
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
         self.scheduler.step()
-
-        # Zero grad
         self.optimizer.zero_grad(set_to_none=True)
 
         return {
@@ -337,7 +388,12 @@ class Trainer:
         sampler = dynamic_batch_sampler(
             dataset, max_tokens=self.training_config.max_tokens_per_batch,
         )
-        return (self.collator(batch) for batch in sampler)
+        base_iter = (self.collator(batch) for batch in sampler)
+        return _PrefetchIterator(
+            base_iter,
+            prefetch_count=2,
+            pin_memory=(self.device.type == "cuda"),
+        )
 
     def _create_val_batches(self) -> list[dict]:
         """バリデーションバッチを作成する。
