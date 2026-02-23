@@ -42,6 +42,8 @@ class G2PnPDataset(IterableDataset):
         max_input_len: int = 512,
         min_input_len: int = 2,
         shuffle_seed: int | None = None,
+        rank: int = 0,
+        world_size: int = 1,
     ) -> None:
         super().__init__()
         self._subset = subset
@@ -49,12 +51,20 @@ class G2PnPDataset(IterableDataset):
         self._max_input_len = max_input_len
         self._min_input_len = min_input_len
         self._shuffle_seed = shuffle_seed
+        self._rank = rank
+        self._world_size = world_size
 
         self._tokenizer = G2PnPTokenizer.get_instance()
         self._vocab = PnPVocabulary()
 
-    def _load_stream(self) -> Iterable[dict]:
-        """Load ReazonSpeech text-only stream."""
+    def _load_stream(self, rank: int = 0, world_size: int = 1) -> Iterable[dict]:
+        """Load ReazonSpeech text-only stream.
+
+        Args:
+            rank: DDP プロセスランク (0-indexed)。
+            world_size: DDP ワールドサイズ。world_size > 1 の場合、
+                データを shard して各ランクが異なるサブセットを処理する。
+        """
         ds = load_dataset(
             _REAZON_DATASET,
             self._subset,
@@ -62,6 +72,8 @@ class G2PnPDataset(IterableDataset):
             streaming=self._streaming,
             trust_remote_code=True,
         ).select_columns(["name", "transcription"])
+        if world_size > 1:
+            ds = ds.shard(num_shards=world_size, index=rank)
         if self._shuffle_seed is not None and self._streaming:
             ds = ds.shuffle(seed=self._shuffle_seed, buffer_size=10_000)
         return ds
@@ -75,7 +87,7 @@ class G2PnPDataset(IterableDataset):
         skipped_ctc = 0
         yielded = 0
 
-        for sample in self._load_stream():
+        for sample in self._load_stream(rank=self._rank, world_size=self._world_size):
             total += 1
             text = sample.get("transcription", "")
             if not text or not text.strip():

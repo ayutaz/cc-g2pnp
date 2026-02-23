@@ -269,13 +269,10 @@ class Trainer:
                         )
 
                 # チェックポイント保存
-                if (
-                    step > 0
-                    and step % config.save_every_n_steps == 0
-                    and is_main_process()
-                ):
-                    self._save_checkpoint(step, step_metrics)
-                    # DDP: 他のランクが save 完了を待つ
+                if step > 0 and step % config.save_every_n_steps == 0:
+                    if is_main_process():
+                        self._save_checkpoint(step, step_metrics)
+                    # DDP: 全ランクが barrier を呼ぶ必要がある
                     if config.use_ddp:
                         import torch.distributed as _dist
 
@@ -384,6 +381,8 @@ class Trainer:
             subset=self.training_config.dataset_subset,
             streaming=True,
             shuffle_seed=self.training_config.seed + self._epoch,
+            rank=self.rank,
+            world_size=self.world_size,
         )
         sampler = dynamic_batch_sampler(
             dataset, max_tokens=self.training_config.max_tokens_per_batch,

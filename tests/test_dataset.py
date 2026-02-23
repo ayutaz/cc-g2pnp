@@ -161,6 +161,33 @@ class TestMultipleSamplesFiltering:
         assert len(results) == 0
 
 
+class TestDDPSharding:
+    """Verify DDP rank/world_size are passed to _load_stream."""
+
+    def test_default_rank_world_size(self):
+        ds = _make_dataset()
+        assert ds._rank == 0
+        assert ds._world_size == 1
+
+    def test_custom_rank_world_size(self):
+        ds = _make_dataset(rank=2, world_size=4)
+        assert ds._rank == 2
+        assert ds._world_size == 4
+
+    def test_load_stream_called_with_rank_world_size(self):
+        ds = _make_dataset(rank=1, world_size=4)
+        with patch.object(ds, "_load_stream", return_value=iter([])) as mock_load:
+            list(ds)
+        mock_load.assert_called_once_with(rank=1, world_size=4)
+
+    def test_single_gpu_no_shard(self):
+        """world_size=1 ではシャーディングしない。"""
+        ds = _make_dataset(rank=0, world_size=1)
+        with patch.object(ds, "_load_stream", return_value=iter([])) as mock_load:
+            list(ds)
+        mock_load.assert_called_once_with(rank=0, world_size=1)
+
+
 class TestOutputFormat:
     """Verify the structure and types of yielded samples."""
 

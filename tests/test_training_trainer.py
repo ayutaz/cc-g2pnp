@@ -256,6 +256,126 @@ class TestCheckpointRestore:
         assert start_step == 500
 
 
+class TestDDPBarrierPlacement:
+    """DDP barrier がチェックポイント保存時に全ランクで呼ばれることのテスト。"""
+
+    def test_barrier_called_outside_is_main_process(
+        self, small_model_config, tmp_path,
+    ):
+        """barrier は is_main_process() ブロックの外で呼ばれる (rank!=0 でも)。"""
+        from cc_g2pnp.training.trainer import Trainer
+
+        training_config = TrainingConfig(
+            max_steps=2,
+            use_amp=False,
+            checkpoint_dir=str(tmp_path / "ckpt"),
+            log_every_n_steps=1,
+            save_every_n_steps=1,
+            val_every_n_steps=100,
+            warmup_steps=0,
+            use_ddp=True,
+        )
+
+        # DDP 関連 + CUDA デバイス割り当てをパッチした状態で Trainer を構築
+        with (
+            patch("cc_g2pnp.training.trainer.setup_ddp"),
+            patch("cc_g2pnp.training.trainer.wrap_model_ddp", side_effect=lambda m, r: m),
+            patch("cc_g2pnp.training.trainer.cleanup_ddp"),
+            patch("cc_g2pnp.training.trainer.is_main_process", return_value=False),
+            patch("cc_g2pnp.training.trainer.reduce_metrics", side_effect=lambda m, d, **kw: m),
+            patch("torch.cuda.is_available", return_value=False),
+            patch("torch.distributed.barrier") as mock_barrier,
+        ):
+            trainer = Trainer(small_model_config, training_config, rank=1, world_size=2)
+            batch = _make_dummy_batch(
+                bpe_vocab_size=small_model_config.bpe_vocab_size,
+                pnp_vocab_size=small_model_config.pnp_vocab_size,
+            )
+
+            trainer._create_data_iterator = MagicMock(
+                return_value=iter([batch] * training_config.max_steps),
+            )
+            trainer._create_val_batches = MagicMock(return_value=[])
+
+            trainer.train()
+
+            # rank != 0 でも barrier が呼ばれることを確認
+            assert mock_barrier.call_count >= 1
+
+    def test_non_main_rank_does_not_save_checkpoint(
+        self, small_model_config, tmp_path,
+    ):
+        """rank != 0 ではチェックポイント保存されない。"""
+        from cc_g2pnp.training.trainer import Trainer
+
+        training_config = TrainingConfig(
+            max_steps=2,
+            use_amp=False,
+            checkpoint_dir=str(tmp_path / "ckpt"),
+            log_every_n_steps=1,
+            save_every_n_steps=1,
+            val_every_n_steps=100,
+            warmup_steps=0,
+            use_ddp=True,
+        )
+
+        with (
+            patch("cc_g2pnp.training.trainer.setup_ddp"),
+            patch("cc_g2pnp.training.trainer.wrap_model_ddp", side_effect=lambda m, r: m),
+            patch("cc_g2pnp.training.trainer.cleanup_ddp"),
+            patch("cc_g2pnp.training.trainer.is_main_process", return_value=False),
+            patch("cc_g2pnp.training.trainer.reduce_metrics", side_effect=lambda m, d, **kw: m),
+            patch("torch.cuda.is_available", return_value=False),
+            patch("torch.distributed.barrier"),
+        ):
+            trainer = Trainer(small_model_config, training_config, rank=1, world_size=2)
+            batch = _make_dummy_batch(
+                bpe_vocab_size=small_model_config.bpe_vocab_size,
+                pnp_vocab_size=small_model_config.pnp_vocab_size,
+            )
+
+            trainer._create_data_iterator = MagicMock(
+                return_value=iter([batch] * training_config.max_steps),
+            )
+            trainer._create_val_batches = MagicMock(return_value=[])
+            trainer._save_checkpoint = MagicMock()
+
+            trainer.train()
+
+            trainer._save_checkpoint.assert_not_called()
+
+
+class TestDDPDataSharding:
+    """DDP データシャーディングのテスト。"""
+
+    def test_data_iterator_passes_rank_world_size(
+        self, small_model_config, training_config,
+    ):
+        """_create_data_iterator が rank/world_size を G2PnPDataset に渡す。"""
+        from cc_g2pnp.training.trainer import Trainer
+
+        trainer = Trainer(small_model_config, training_config, rank=0, world_size=1)
+        # rank/world_size をテスト用に上書き
+        trainer.rank = 2
+        trainer.world_size = 4
+
+        with patch("cc_g2pnp.training.trainer.G2PnPDataset") as MockDataset:
+            mock_ds = MagicMock()
+            mock_ds.__iter__ = MagicMock(return_value=iter([]))
+            MockDataset.return_value = mock_ds
+
+            with patch(
+                "cc_g2pnp.training.trainer.dynamic_batch_sampler",
+                return_value=iter([]),
+            ):
+                trainer._create_data_iterator()
+
+        MockDataset.assert_called_once()
+        call_kwargs = MockDataset.call_args
+        assert call_kwargs.kwargs.get("rank") == 2 or call_kwargs[1].get("rank") == 2
+        assert call_kwargs.kwargs.get("world_size") == 4 or call_kwargs[1].get("world_size") == 4
+
+
 class TestCollatorKeyMapping:
     """collator 出力キーがモデル引数に正しくマッピングされることのテスト。"""
 
