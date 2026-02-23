@@ -1,8 +1,7 @@
-"""Training logger for CC-G2PnP. Supports W&B backend."""
+"""Training logger for CC-G2PnP. Uses W&B as the logging backend."""
 
 from __future__ import annotations
 
-import warnings
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -20,6 +19,9 @@ except ImportError:
 class TrainingLogger:
     """Training metrics logger with W&B backend.
 
+    W&B is required. Raises ``RuntimeError`` if wandb is not installed
+    or the user is not logged in.
+
     Args:
         config: TrainingConfig instance with logging settings.
 
@@ -29,18 +31,21 @@ class TrainingLogger:
     """
 
     def __init__(self, config: TrainingConfig) -> None:
-        self._use_wandb = False
+        if not _wandb_available:
+            msg = (
+                "wandb is required but not installed. "
+                "Install with: pip install wandb"
+            )
+            raise RuntimeError(msg)
 
-        if config.use_wandb:
-            if not _wandb_available:
-                warnings.warn(
-                    "wandb is not installed. Disabling W&B logging. "
-                    "Install with: pip install wandb",
-                    stacklevel=2,
-                )
-            else:
-                _wandb.init(project=config.project_name, name=config.run_name)
-                self._use_wandb = True
+        if not _wandb.api.api_key:
+            msg = (
+                "wandb is not logged in. "
+                "Run `wandb login` or set the WANDB_API_KEY environment variable."
+            )
+            raise RuntimeError(msg)
+
+        _wandb.init(project=config.project_name, name=config.run_name)
 
     def log_metrics(self, metrics: dict[str, float], step: int) -> None:
         """Log metrics to W&B.
@@ -49,8 +54,7 @@ class TrainingLogger:
             metrics: Dictionary of metric name to value.
             step: Current training step number.
         """
-        if self._use_wandb:
-            _wandb.log(metrics, step=step)
+        _wandb.log(metrics, step=step)
 
     def log_hyperparams(self, params: dict[str, Any]) -> None:
         """Log hyperparameters to W&B.
@@ -58,14 +62,11 @@ class TrainingLogger:
         Args:
             params: Dictionary of hyperparameter name to value.
         """
-        if self._use_wandb:
-            _wandb.config.update(params)
+        _wandb.config.update(params)
 
     def close(self) -> None:
         """Close W&B backend and release resources."""
-        if self._use_wandb:
-            _wandb.finish()
-            self._use_wandb = False
+        _wandb.finish()
 
     def __enter__(self) -> TrainingLogger:
         return self

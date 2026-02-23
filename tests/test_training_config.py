@@ -25,7 +25,6 @@ class TestTrainingConfigDefaults:
         assert cfg.save_every_n_steps == 10_000
         assert cfg.keep_last_n == 5
         assert cfg.log_every_n_steps == 100
-        assert cfg.use_wandb is True
         assert cfg.project_name == "cc-g2pnp"
         assert cfg.run_name is None
         assert cfg.use_amp is True
@@ -59,7 +58,6 @@ class TestTrainingConfigCustom:
             save_every_n_steps=5_000,
             keep_last_n=3,
             log_every_n_steps=50,
-            use_wandb=True,
             project_name="test-project",
             run_name="run-001",
             use_amp=False,
@@ -82,7 +80,6 @@ class TestTrainingConfigCustom:
         assert cfg.save_every_n_steps == 5_000
         assert cfg.keep_last_n == 3
         assert cfg.log_every_n_steps == 50
-        assert cfg.use_wandb is True
         assert cfg.project_name == "test-project"
         assert cfg.run_name == "run-001"
         assert cfg.use_amp is False

@@ -227,7 +227,6 @@ class TestTrainerE2EMinimal:
         training_config = TrainingConfig(
             max_steps=3,
             use_amp=False,
-            use_wandb=False,
             checkpoint_dir=str(tmp_path / "ckpt"),  # type: ignore[operator]
             save_every_n_steps=100,
             val_every_n_steps=100,
@@ -235,7 +234,8 @@ class TestTrainerE2EMinimal:
             warmup_steps=0,
         )
 
-        trainer = Trainer(_SMALL_MODEL_CONFIG, training_config)
+        with patch("cc_g2pnp.training.trainer.TrainingLogger"):
+            trainer = Trainer(_SMALL_MODEL_CONFIG, training_config)
 
         dummy_batch = _make_dummy_batch()
 

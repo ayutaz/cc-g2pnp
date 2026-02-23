@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -14,7 +13,6 @@ from cc_g2pnp.training.logger import TrainingLogger
 def _make_config(**overrides):
     """Create a minimal config-like object for TrainingLogger."""
     defaults = {
-        "use_wandb": False,
         "project_name": "test-project",
         "run_name": "test-run",
     }
@@ -22,32 +20,70 @@ def _make_config(**overrides):
     return SimpleNamespace(**defaults)
 
 
-# ── W&B only ────────────────────────────────────────────────────
+def _patch_wandb(monkeypatch):
+    """Patch wandb module with a MagicMock and return it."""
+    mock_wandb = MagicMock()
+    mock_wandb.api.api_key = "fake-key"
+    monkeypatch.setattr("cc_g2pnp.training.logger._wandb", mock_wandb)
+    monkeypatch.setattr("cc_g2pnp.training.logger._wandb_available", True)
+    return mock_wandb
 
 
-class TestWandBOnly:
-    """Tests with W&B enabled."""
+# ── Init ─────────────────────────────────────────────────────────
+
+
+class TestInit:
+    """Tests for TrainingLogger initialization."""
 
     def test_init_calls_wandb_init(self, monkeypatch):
         """wandb.init() is called with correct project/name."""
+        mock_wandb = _patch_wandb(monkeypatch)
+        config = _make_config()
+        TrainingLogger(config)
+        mock_wandb.init.assert_called_once_with(project="test-project", name="test-run")
+
+    def test_raises_if_wandb_not_installed(self, monkeypatch):
+        """RuntimeError raised when wandb is not installed."""
+        monkeypatch.setattr("cc_g2pnp.training.logger._wandb_available", False)
+        monkeypatch.setattr("cc_g2pnp.training.logger._wandb", None)
+
+        config = _make_config()
+        with pytest.raises(RuntimeError, match="wandb is required but not installed"):
+            TrainingLogger(config)
+
+    def test_raises_if_wandb_not_logged_in(self, monkeypatch):
+        """RuntimeError raised when wandb API key is not set."""
         mock_wandb = MagicMock()
+        mock_wandb.api.api_key = None
         monkeypatch.setattr("cc_g2pnp.training.logger._wandb", mock_wandb)
         monkeypatch.setattr("cc_g2pnp.training.logger._wandb_available", True)
 
-        config = _make_config(use_wandb=True)
-        logger = TrainingLogger(config)
+        config = _make_config()
+        with pytest.raises(RuntimeError, match="wandb is not logged in"):
+            TrainingLogger(config)
 
-        mock_wandb.init.assert_called_once_with(project="test-project", name="test-run")
-        assert logger._use_wandb is True
+    def test_raises_if_wandb_api_key_empty(self, monkeypatch):
+        """RuntimeError raised when wandb API key is empty string."""
+        mock_wandb = MagicMock()
+        mock_wandb.api.api_key = ""
+        monkeypatch.setattr("cc_g2pnp.training.logger._wandb", mock_wandb)
+        monkeypatch.setattr("cc_g2pnp.training.logger._wandb_available", True)
+
+        config = _make_config()
+        with pytest.raises(RuntimeError, match="wandb is not logged in"):
+            TrainingLogger(config)
+
+
+# ── Logging ──────────────────────────────────────────────────────
+
+
+class TestLogging:
+    """Tests for log_metrics and log_hyperparams."""
 
     def test_log_metrics(self, monkeypatch):
         """log_metrics calls wandb.log()."""
-        mock_wandb = MagicMock()
-        monkeypatch.setattr("cc_g2pnp.training.logger._wandb", mock_wandb)
-        monkeypatch.setattr("cc_g2pnp.training.logger._wandb_available", True)
-
-        config = _make_config(use_wandb=True)
-        logger = TrainingLogger(config)
+        mock_wandb = _patch_wandb(monkeypatch)
+        logger = TrainingLogger(_make_config())
 
         metrics = {"loss": 0.3, "acc": 0.95}
         logger.log_metrics(metrics, step=200)
@@ -56,64 +92,27 @@ class TestWandBOnly:
 
     def test_log_hyperparams(self, monkeypatch):
         """log_hyperparams calls wandb.config.update()."""
-        mock_wandb = MagicMock()
-        monkeypatch.setattr("cc_g2pnp.training.logger._wandb", mock_wandb)
-        monkeypatch.setattr("cc_g2pnp.training.logger._wandb_available", True)
-
-        config = _make_config(use_wandb=True)
-        logger = TrainingLogger(config)
+        mock_wandb = _patch_wandb(monkeypatch)
+        logger = TrainingLogger(_make_config())
 
         params = {"lr": 1e-4}
         logger.log_hyperparams(params)
 
         mock_wandb.config.update.assert_called_once_with(params)
 
-    def test_close(self, monkeypatch):
+
+# ── Close ────────────────────────────────────────────────────────
+
+
+class TestClose:
+    """Tests for close()."""
+
+    def test_close_calls_wandb_finish(self, monkeypatch):
         """close() calls wandb.finish()."""
-        mock_wandb = MagicMock()
-        monkeypatch.setattr("cc_g2pnp.training.logger._wandb", mock_wandb)
-        monkeypatch.setattr("cc_g2pnp.training.logger._wandb_available", True)
-
-        config = _make_config(use_wandb=True)
-        logger = TrainingLogger(config)
-
+        mock_wandb = _patch_wandb(monkeypatch)
+        logger = TrainingLogger(_make_config())
         logger.close()
-
         mock_wandb.finish.assert_called_once()
-        assert logger._use_wandb is False
-
-
-# ── Disabled ───────────────────────────────────────────────
-
-
-class TestDisabled:
-    """Tests with W&B disabled."""
-
-    def test_init_no_backend(self):
-        """No backend initialized when disabled."""
-        config = _make_config()
-        logger = TrainingLogger(config)
-
-        assert logger._use_wandb is False
-
-    def test_log_metrics_noop(self):
-        """log_metrics does nothing when disabled."""
-        config = _make_config()
-        logger = TrainingLogger(config)
-        # Should not raise
-        logger.log_metrics({"loss": 0.5}, step=1)
-
-    def test_log_hyperparams_noop(self):
-        """log_hyperparams does nothing when disabled."""
-        config = _make_config()
-        logger = TrainingLogger(config)
-        logger.log_hyperparams({"lr": 1e-4})
-
-    def test_close_noop(self):
-        """close() does nothing when disabled."""
-        config = _make_config()
-        logger = TrainingLogger(config)
-        logger.close()
 
 
 # ── Context manager ─────────────────────────────────────────────
@@ -122,56 +121,23 @@ class TestDisabled:
 class TestContextManager:
     """Tests for context manager protocol."""
 
-    def test_enter_returns_self(self):
+    def test_enter_returns_self(self, monkeypatch):
         """__enter__ returns the logger instance."""
-        config = _make_config()
-        logger = TrainingLogger(config)
-
+        _patch_wandb(monkeypatch)
+        logger = TrainingLogger(_make_config())
         with logger as ctx:
             assert ctx is logger
 
     def test_exit_calls_close(self, monkeypatch):
         """__exit__ calls close()."""
-        mock_wandb = MagicMock()
-        monkeypatch.setattr("cc_g2pnp.training.logger._wandb", mock_wandb)
-        monkeypatch.setattr("cc_g2pnp.training.logger._wandb_available", True)
-
-        config = _make_config(use_wandb=True)
-        with TrainingLogger(config):
+        mock_wandb = _patch_wandb(monkeypatch)
+        with TrainingLogger(_make_config()):
             pass
-
         mock_wandb.finish.assert_called_once()
 
     def test_exit_calls_close_on_exception(self, monkeypatch):
         """__exit__ calls close() even when an exception occurs."""
-        mock_wandb = MagicMock()
-        monkeypatch.setattr("cc_g2pnp.training.logger._wandb", mock_wandb)
-        monkeypatch.setattr("cc_g2pnp.training.logger._wandb_available", True)
-
-        config = _make_config(use_wandb=True)
-        with pytest.raises(RuntimeError, match="test error"), TrainingLogger(config):
+        mock_wandb = _patch_wandb(monkeypatch)
+        with pytest.raises(RuntimeError, match="test error"), TrainingLogger(_make_config()):
             raise RuntimeError("test error")
-
         mock_wandb.finish.assert_called_once()
-
-
-# ── wandb not installed ─────────────────────────────────────────
-
-
-class TestWandBNotInstalled:
-    """Tests for when wandb is not installed."""
-
-    def test_warns_and_disables(self, monkeypatch):
-        """Warning issued and wandb disabled when not installed."""
-        monkeypatch.setattr("cc_g2pnp.training.logger._wandb_available", False)
-        monkeypatch.setattr("cc_g2pnp.training.logger._wandb", None)
-
-        config = _make_config(use_wandb=True)
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            logger = TrainingLogger(config)
-
-        assert logger._use_wandb is False
-        assert len(w) == 1
-        assert "wandb is not installed" in str(w[0].message)

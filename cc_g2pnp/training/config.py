@@ -56,9 +56,6 @@ class TrainingConfig:
     log_every_n_steps: int = 100
     """Log metrics every N steps."""
 
-    use_wandb: bool = True
-    """Enable Weights & Biases logging."""
-
     project_name: str = "cc-g2pnp"
     """Project name for experiment tracking."""
 

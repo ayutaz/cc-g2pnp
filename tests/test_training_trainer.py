@@ -11,6 +11,13 @@ from cc_g2pnp.model.config import CC_G2PnPConfig
 from cc_g2pnp.training.config import TrainingConfig
 
 
+@pytest.fixture(autouse=True)
+def _mock_training_logger():
+    """全テストで TrainingLogger をモックして W&B 依存を排除する。"""
+    with patch("cc_g2pnp.training.trainer.TrainingLogger"):
+        yield
+
+
 @pytest.fixture
 def small_model_config() -> CC_G2PnPConfig:
     """テスト用の小さいモデル設定。"""
@@ -29,7 +36,6 @@ def training_config(tmp_path) -> TrainingConfig:
     return TrainingConfig(
         max_steps=3,
         use_amp=False,
-        use_wandb=False,
         checkpoint_dir=str(tmp_path / "ckpt"),
         log_every_n_steps=1,
         save_every_n_steps=100,

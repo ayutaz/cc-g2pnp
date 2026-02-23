@@ -53,7 +53,6 @@ def parse_args() -> argparse.Namespace:
 
     # Logging
     parser.add_argument("--log-every", type=int, default=100, help="Log metrics every N steps")
-    parser.add_argument("--no-wandb", action="store_false", dest="wandb", help="Disable Weights & Biases logging")
     parser.add_argument("--project-name", type=str, default="cc-g2pnp", help="Project name for experiment tracking")
     parser.add_argument("--run-name", type=str, default=None, help="Run name for experiment tracking")
 
@@ -108,7 +107,6 @@ def main() -> None:
         save_every_n_steps=args.save_every,
         keep_last_n=args.keep_last,
         log_every_n_steps=args.log_every,
-        use_wandb=args.wandb,
         project_name=args.project_name,
         run_name=args.run_name,
         use_amp=args.amp,
