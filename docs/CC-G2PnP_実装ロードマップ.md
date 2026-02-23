@@ -9,8 +9,8 @@ arXiv:2602.17157 (Shirahata & Yamamoto, LY Corporation, 2026) の再現実装計
 ```
 Phase 0: 環境構築・データ準備        ──┐
 Phase 1: データパイプライン           ──┤ 基盤  ✅ 完了
-Phase 2: モデルコア実装              ──┘       ← 次
-Phase 3: 学習パイプライン            ── 学習
+Phase 2: モデルコア実装              ──┘       ✅ 完了
+Phase 3: 学習パイプライン            ── 学習   ← 次
 Phase 4: 推論・ストリーミング         ── 推論
 Phase 5: 評価                       ── 検証
 Phase 6: アブレーション・最適化       ── 発展
@@ -44,11 +44,18 @@ cc_g2pnp/
 │   ├── tokenizer.py       # CALM2 BPEトークナイザラッパー
 │   ├── dataset.py         # ReazonSpeech streaming IterableDataset
 │   └── collator.py        # Dynamic Batching + パディング
-├── model/             # モデル定義 (Phase 2)
-│   ├── conformer.py
-│   ├── attention.py
-│   ├── convolution.py
-│   └── ctc.py
+├── model/             # モデル定義 (Phase 2 ✅)
+│   ├── __init__.py          # 13 public exports
+│   ├── config.py            # CC_G2PnPConfig dataclass
+│   ├── embedding.py         # TokenEmbedding (BPE → D, repeat_interleave ×8)
+│   ├── positional_encoding.py # RelativePositionalEncoding (sinusoidal)
+│   ├── attention.py         # ChunkAwareAttention + create_chunk_mask/mla_mask
+│   ├── feed_forward.py      # FeedForwardModule (Macaron half-step)
+│   ├── convolution.py       # ConformerConvModule (causal depthwise conv)
+│   ├── conformer_block.py   # ConformerBlock (FFN→MHSA→Conv→FFN→LN)
+│   ├── encoder.py           # ConformerEncoder (8層 + self-conditioned CTC)
+│   ├── ctc_decoder.py       # CTCHead + greedy_decode
+│   └── cc_g2pnp.py         # CC_G2PnP (統合モデル, 84Mパラメータ)
 ├── training/          # 学習ループ (Phase 3)
 │   ├── trainer.py
 │   └── scheduler.py
@@ -63,7 +70,18 @@ tests/
 ├── test_data_loading.py   # ReazonSpeechロードテスト (3件, network)
 ├── test_vocabulary.py     # CTC語彙テスト (8件)
 ├── test_pnp_labeler.py    # PnPラベル生成テスト (9件)
-└── test_pipeline.py       # 統合テスト (7件 + 1件network)
+├── test_pipeline.py       # 統合テスト (7件 + 1件network)
+├── test_dataset.py        # データセットテスト
+├── test_collator.py       # コレータテスト
+├── test_embedding.py      # TokenEmbeddingテスト
+├── test_positional_encoding.py # RelativePositionalEncodingテスト
+├── test_attention.py      # ChunkAwareAttention + マスク生成テスト
+├── test_feed_forward.py   # FeedForwardModuleテスト
+├── test_convolution.py    # ConformerConvModuleテスト
+├── test_conformer_block.py # ConformerBlockテスト
+├── test_ctc_decoder.py    # CTCHead + greedy_decodeテスト
+├── test_encoder.py        # ConformerEncoderテスト
+└── test_model.py          # CC_G2PnP統合テスト (backward, variable lengths等)
 ```
 
 ### 完了条件
@@ -94,7 +112,7 @@ tests/
 |---|---|---|---|---|
 | 1.1 | BPEトークン化モジュール | CALM2トークナイザで転写テキストをトークンID列に変換 | 低 | ✅ |
 | 1.2 | PnPラベル生成モジュール | pyopenjtalk full-context label → 音素+韻律ラベル系列の変換。Dict-DNN未公開のため代替実装 | **高** | ✅ |
-| 1.3 | CTC語彙の定義 | 134クラス（blank + カタカナ128モーラ + 韻律記号`*`,`/`,`#` + unk + pad）の語彙マッピング | 中 | ✅ |
+| 1.3 | CTC語彙の定義 | 140トークン（blank + カタカナ134モーラ + 韻律記号`*`,`/`,`#` + unk + pad）の語彙マッピング | 中 | ✅ |
 | 1.4 | データ前処理パイプライン | ReazonSpeech streaming → BPEトークン化 + PnPラベル生成 → CTC制約チェック | 中 | ✅ |
 | 1.5 | Dynamic Batchingの実装 | 最大8,192トークン/ミニバッチのdynamic batching。可変長シーケンスのパディング処理 | 中 | ✅ |
 
@@ -102,7 +120,7 @@ tests/
 
 | ファイル | 概要 |
 |---------|------|
-| `cc_g2pnp/data/vocabulary.py` | `PnPVocabulary` — 134トークン (blank + カタカナ128モーラ + 韻律3 + unk + pad) |
+| `cc_g2pnp/data/vocabulary.py` | `PnPVocabulary` — 140トークン (blank + カタカナ134モーラ + 韻律3 + unk + pad) |
 | `cc_g2pnp/data/pnp_labeler.py` | `generate_pnp_labels()` — ttslearn pp_symbolsベース → CC-G2PnP記法に変換 |
 | `cc_g2pnp/data/tokenizer.py` | `G2PnPTokenizer` — CALM2 BPE薄ラッパー |
 | `cc_g2pnp/data/dataset.py` | `G2PnPDataset(IterableDataset)` — ReazonSpeech streaming + CTC制約チェック |
@@ -144,7 +162,7 @@ tests/
 
 | 項目 | 計画 | 実装 | 理由 |
 |------|------|------|------|
-| 語彙サイズ | ~106クラス | **134クラス** | 外来語・拗音モーラを網羅した結果 |
+| 語彙サイズ | ~106クラス | **140トークン (134モーラ)** | 外来語・拗音モーラを網羅（v2で`シェ`,`ジェ`,`チェ`,`ディャ`,`ディョ`,`フュ`追加） |
 | CTC制約 | input_length >= target_length | **input_length * 8 >= target_length** | アップサンプリング係数8を考慮 |
 | キャッシュ保存 | 前処理結果のキャッシュ | **ストリーミングのみ** | メモリ効率優先、キャッシュは必要に応じて後で追加 |
 
@@ -154,7 +172,7 @@ tests/
 - [x] CTC制約（input_length×8 >= target_length）を満たすデータ対が生成される
 - [x] Dynamic batchingで効率的なミニバッチを構成できる
 - [x] ruff lint エラーなし
-- [x] 全35テスト PASS（vocabulary×8, pnp_labeler×9, pipeline×7, G2P×5, tokenizer×6）
+- [x] 全68テスト PASS (非ネットワーク)、data/ カバレッジ: collator=100%, vocabulary=100%, tokenizer=100%, dataset=93%, pnp_labeler=84%
 
 ---
 
@@ -179,17 +197,17 @@ tests/
 
 ### タスク
 
-| # | タスク | 詳細 | 難易度 |
-|---|---|---|---|
-| 2.1 | Embedding + Token Upsampling | `Embedding(65000, 512)` + Repeat Upsample (×8)。入力 [B, T] → [B, T×8, 512] | 低 |
-| 2.2 | Causal Convolution Module | LayerNorm → Pointwise Conv(512→1024) → GLU → CausalDepthwiseConv1D(kernel=31) → BatchNorm → Swish → Pointwise Conv(512→512) → Dropout。左パディング `F.pad(x, (kernel_size-1, 0))` | 中 |
-| 2.3 | Chunk-aware Streaming Attention | Multi-Head Self-Attention (heads=8 ※推定) + 相対位置エンコーディング（※推定）+ chunk-aware attentionマスク生成。パラメータ: C（チャンクサイズ）, P（過去コンテキスト=10） | **高** |
-| 2.4 | Feed-Forward Module | LayerNorm → Linear(512→2048) → Swish → Dropout → Linear(2048→512) → Dropout。Half-step residual (factor=0.5) | 低 |
-| 2.5 | Conformer層の組み立て | FFN1 → MHSA → Conv → FFN2 → LayerNorm の順序で結合。8層スタック | 中 |
-| 2.6 | Minimum Look-Ahead (MLA) | 第1層のself-attentionのみ、チャンク外のM個の将来トークンを参照するマスク。通常のchunk-awareマスクとは別のマスクを第1層に適用 | **高** |
-| 2.7 | Self-conditioned CTC | 第2, 4, 6層に中間CTC損失。中間予測を線形変換して次の層の入力に加算。出力層（Linear）は最終層と中間層で共有 | **高** |
-| 2.8 | CTC出力層 | Linear(512, ~106) + Log-Softmax。Greedy decoding（argmax → unique_consecutive → blank除去） | 低 |
-| 2.9 | 全体モデル統合 | 上記コンポーネントを `CC_G2PnP_Model` クラスに統合。forward/inference両方のパスを実装 | 中 |
+| # | タスク | 詳細 | 難易度 | 状態 |
+|---|---|---|---|---|
+| 2.1 | Embedding + Token Upsampling | `Embedding(65000, 512)` + `sqrt(d_model)` scale + `repeat_interleave(×8)`。入力 [B, T] → [B, T×8, 512] | 低 | ✅ |
+| 2.2 | Causal Convolution Module | LN→Pointwise(D→2D)→GLU→CausalDWConv(k=31)→BN→SiLU→Pointwise→Dropout | 中 | ✅ |
+| 2.3 | Chunk-aware Streaming Attention | MHSA (heads=8) + Shaw et al. 相対位置バイアス (Q*pos_K^T) + chunk-aware mask (vectorized) | **高** | ✅ |
+| 2.4 | Feed-Forward Module | LN→Linear(512→2048)→SiLU→Dropout→Linear(2048→512)→Dropout | 低 | ✅ |
+| 2.5 | Conformer層の組み立て | x+0.5*FFN1→x+MHSA→x+Conv→x+0.5*FFN2→LN (Macaron-style) | 中 | ✅ |
+| 2.6 | Minimum Look-Ahead (MLA) | Layer 0のみMLA mask適用。`create_mla_mask()` でchunk外M個参照 | **高** | ✅ |
+| 2.7 | Self-conditioned CTC | Layers 1,3,5 (0-indexed) に中間CTC。logitsをhiddenにフィードバック。CTC projection重み共有 | **高** | ✅ |
+| 2.8 | CTC出力層 | Linear(512, 140) + log_softmax + greedy_decode (argmax→unique_consecutive→blank除去) | 低 | ✅ |
+| 2.9 | 全体モデル統合 | `CC_G2PnP` クラス: embedding→encoder→ctc_head, forward()+inference(), 84Mパラメータ | 中 | ✅ |
 
 ### 論文記載 vs 推定パラメータ
 
@@ -207,20 +225,61 @@ tests/
 | 位置エンコーディング | 相対位置(Transformer-XLスタイル) | **※推定** (Conformer原論文に準拠) |
 | Dropout率 | 不明 | **※推定** (0.1が一般的) |
 
-### 参考実装
+### 参考実装（Phase 2で参照）
 
-| コンポーネント | 参考フレームワーク |
-|---|---|
-| Chunk-aware Attention | NVIDIA NeMo (cache-aware streaming) |
-| Self-conditioned CTC | ESPnet (PR #3274) |
-| Dynamic Chunk Training | SpeechBrain (DynChunkTrainConfig) |
+| コンポーネント | 参考フレームワーク | 実装結果 |
+|---|---|---|
+| Chunk-aware Attention | NVIDIA NeMo (cache-aware streaming) | `create_chunk_mask`/`create_mla_mask` (vectorized) |
+| Self-conditioned CTC | ESPnet (PR #3274) | `ConformerEncoder` + `ctc_to_hidden` フィードバック |
+| Dynamic Chunk Training | SpeechBrain (DynChunkTrainConfig) | Phase 3で参照予定 |
+
+### 実装成果物
+
+| ファイル | 概要 |
+|---------|------|
+| `cc_g2pnp/model/config.py` | `CC_G2PnPConfig` dataclass + `__post_init__` validation |
+| `cc_g2pnp/model/embedding.py` | `TokenEmbedding` — Embedding(65000,512) → sqrt(d_model) scale → dropout → repeat_interleave ×8 |
+| `cc_g2pnp/model/positional_encoding.py` | `RelativePositionalEncoding` — sinusoidal PE buffer, max_len=5000 |
+| `cc_g2pnp/model/attention.py` | `ChunkAwareAttention` + `create_chunk_mask` + `create_mla_mask` (vectorized) — Shaw et al. relative pos bias |
+| `cc_g2pnp/model/feed_forward.py` | `FeedForwardModule` — LN→Linear(512→2048)→SiLU→Dropout→Linear(2048→512)→Dropout |
+| `cc_g2pnp/model/convolution.py` | `ConformerConvModule` — LN→Pointwise(D→2D)→GLU→CausalDWConv(k=31)→BN→SiLU→Pointwise→Dropout |
+| `cc_g2pnp/model/conformer_block.py` | `ConformerBlock` — x+0.5*FFN1→x+MHSA→x+Conv→x+0.5*FFN2→LN (Macaron-style) |
+| `cc_g2pnp/model/encoder.py` | `ConformerEncoder` — 8層 + self-conditioned CTC at layers 1,3,5 (0-indexed) |
+| `cc_g2pnp/model/ctc_decoder.py` | `CTCHead` (log_softmax) + `greedy_decode` (argmax→unique_consecutive→remove blanks) |
+| `cc_g2pnp/model/cc_g2pnp.py` | `CC_G2PnP` — CTC projection共有, inference uses `self()`, zero_infinity=True |
+| `cc_g2pnp/model/__init__.py` | 13 public exports |
+| `tests/test_embedding.py` | TokenEmbedding テスト |
+| `tests/test_positional_encoding.py` | RelativePositionalEncoding テスト |
+| `tests/test_attention.py` | ChunkAwareAttention + マスク生成テスト |
+| `tests/test_feed_forward.py` | FeedForwardModule テスト |
+| `tests/test_convolution.py` | ConformerConvModule テスト (batch_size=1含む) |
+| `tests/test_conformer_block.py` | ConformerBlock テスト |
+| `tests/test_ctc_decoder.py` | CTCHead + greedy_decode テスト |
+| `tests/test_encoder.py` | ConformerEncoder テスト |
+| `tests/test_model.py` | CC_G2PnP 統合テスト (backward/gradient, variable lengths, CTC weight, config validation, projection sharing) |
+
+### 計画からの変更点
+
+| 項目 | 計画 | 実装 | 理由 |
+|------|------|------|------|
+| CTC出力サイズ | ~106クラス | **140トークン** | Phase 1語彙定義に準拠（134モーラ+3韻律+blank+unk+pad） |
+| 位置バイアス | query-only scalar bias | **Shaw et al. Q*pos_K^T** | Conformer標準のrelative positional bias方式 |
+| マスク生成 | Pythonループ | **torch.arange broadcasting** | ベクトル化で高速化 |
+| CTC projection | 別々のLinear層 | **最終head/中間層で重み共有** | 論文仕様に準拠 |
+| 中間CTC層 | 第2,4,6層 (1-indexed) | **layers 1,3,5 (0-indexed)** | 同一の層を0-indexedで表現 |
+| パラメータ数 | 数十M（推定） | **84M** | デフォルト設定 (d_model=512, 8層, heads=8) |
+| モデルクラス名 | CC_G2PnP_Model | **CC_G2PnP** | 簡潔さ |
 
 ### 完了条件
-- [ ] モデルのforwardパスが通り、正しい形状の出力を返す
-- [ ] Chunk-aware attentionマスクが正しく生成される（可視化で確認）
-- [ ] MLA適用時にlook-aheadサイズが正しく増加する
-- [ ] 中間CTC損失が正しく計算される
-- [ ] パラメータ数が妥当な範囲（Conformer 8層×512次元で数十M程度）
+- [x] モデルのforwardパスが通り、正しい形状の出力を返す
+- [x] Chunk-aware attentionマスクが正しく生成される（concrete exampleで検証済み）
+- [x] MLA適用時にlook-aheadサイズが正しく増加する
+- [x] 中間CTC損失が正しく計算される
+- [x] パラメータ数 84M（Conformer 8層×512次元）
+- [x] ruff lint エラーなし
+- [x] 全183テスト PASS（非ネットワーク）
+- [x] model/ 全11ファイル カバレッジ **100%**、プロジェクト全体 **96%**
+- [x] 5人のエキスパートレビュー完了、Critical/High issue = 0
 
 ---
 
@@ -232,7 +291,7 @@ tests/
 
 | # | タスク | 詳細 | 難易度 |
 |---|---|---|---|
-| 3.1 | CTC損失関数の実装 | `torch.nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)` + 中間CTC損失の統合。`total_loss = final_ctc + (1/3) * (inter_L2 + inter_L4 + inter_L6)` | 中 |
+| 3.1 | CTC損失関数の実装 | **Phase 2で実装済み**: `CC_G2PnP.forward()` に `CTCLoss(blank=0, zero_infinity=True)` + 中間CTC損失統合済み | ✅ |
 | 3.2 | Optimizer・スケジューラ設定 | AdamW (lr=1e-4, weight_decay=0.01, betas=(0.9, 0.98)) ※推定。ExponentialLR: γ ≈ 0.9999981 (1e-4→1e-5, 1.2Mステップ) | 低 |
 | 3.3 | 学習ループ実装 | Hydra設定、チェックポイント保存/復元、ログ出力（W&B/TensorBoard）、勾配クリッピング（※推定 max_norm=1.0） | 中 |
 | 3.4 | マルチGPU対応 (DDP) | PyTorch DistributedDataParallel。Self-conditioned CTCのマルチGPU問題に注意（ESPnet Issue #4031参照） | 中 |
@@ -368,15 +427,15 @@ tests/
 ```
 Phase 0: 環境構築・データ準備        ████████ ✅ 完了
 Phase 1: データパイプライン           ████████ ✅ 完了
-Phase 2: モデルコア実装              ░░░░░░░░████████████░░░░  ← 次
-Phase 3: 学習パイプライン            ░░░░░░░░░░░░░░░░████████
+Phase 2: モデルコア実装              ████████ ✅ 完了
+Phase 3: 学習パイプライン            ░░░░░░░░████████████░░░░  ← 次
 Phase 4: 推論・ストリーミング         ░░░░░░░░░░░░░░░░░░██████
 Phase 5: 評価                       ░░░░░░░░░░░░░░░░░░░░████
 Phase 6: アブレーション              ░░░░░░░░░░░░░░░░░░░░░░██
 ```
 
-- ~~Phase 0-1 はPhase 2と部分的に並行可能~~ → Phase 0-1 完了済み
-- Phase 3 はPhase 2の完了が前提
+- ~~Phase 0-1 はPhase 2と部分的に並行可能~~ → Phase 0-2 完了済み
+- Phase 3 はPhase 2の完了が前提 → **前提充足済み**
 - Phase 4-5 はPhase 3の学習済みモデルが前提
 - Phase 6 はPhase 5の評価基盤が前提
 
@@ -392,10 +451,10 @@ Phase 6: アブレーション              ░░░░░░░░░░░░
 | 1.2Mステップの学習に長時間 | 中 | Phase 3 | AMP (FP16/BF16) + DDP + gradient checkpointing。まず1%データで検証 |
 | CTC収束不安定 | 中 | Phase 3 | `zero_infinity=True`、勾配クリッピング、小データでの事前検証 |
 | Self-conditioned CTCのマルチGPU問題 | 中 | Phase 3 | ESPnet Issue #4031参照。シングルGPUで先に検証してからDDPに移行 |
-| Chunk-aware Attentionのマスク生成の複雑さ | 中 | Phase 2 | NeMoの実装を参考に、可視化テストで正当性を確認 |
+| Chunk-aware Attentionのマスク生成の複雑さ | ~~中~~ 解決済 | Phase 2 | vectorized実装完了。concrete exampleテストで正当性を確認済み |
 | pyopenjtalkのインストール問題 | ~~中~~ 解決済 | Phase 0 | `pyopenjtalk-plus>=0.4.1`（Python 3.13 Windows対応フォーク）を採用 |
 | NANSY-TTS未公開でMOS評価困難 | 低 | Phase 6 | OSS TTS（VITS2等）で代替、または客観指標（UTMOS）で代替 |
-| Conformerのヘッド数/カーネルサイズが論文未記載 | 低 | Phase 2 | Conformer標準値（heads=8, kernel=31）で開始 |
+| Conformerのヘッド数/カーネルサイズが論文未記載 | ~~低~~ 解決済 | Phase 2 | Conformer標準値（heads=8, kernel=31）で実装済み。84Mパラメータ |
 | ReazonSpeechデータのフィルタリング条件不明 | 低 | Phase 1 | 全データを使用。CTC制約違反・空テキスト・極端な長さのサンプルは自動除外済み |
 
 ---
@@ -406,7 +465,7 @@ Phase 6: アブレーション              ░░░░░░░░░░░░
 |---|---|---|---|
 | **M0: 環境Ready** | 0 | 全ライブラリのimport成功、トークナイザ動作確認 | ✅ 達成 |
 | **M1: データパイプライン完成** | 1 | 任意のテキスト → (BPEトークン列, PnPラベル列) のペア生成 | ✅ 達成 |
-| **M2: モデルForwardパス** | 2 | ランダム入力でforward pass完了、出力形状が正しい | |
+| **M2: モデルForwardパス** | 2 | ランダム入力でforward pass完了、出力形状が正しい。183テスト、96%カバレッジ、84Mパラメータ | ✅ 達成 |
 | **M3: 小規模学習収束** | 3 | ReazonSpeech 1%でCTC損失が単調減少 | |
 | **M4: ストリーミング推論動作** | 4 | チャンク単位の逐次推論でPnPラベル出力 | |
 | **M5: 評価メトリクス計測** | 5 | 全6メトリクスの計算、相対的な性能傾向が論文と一致 | |
