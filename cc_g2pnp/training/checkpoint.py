@@ -69,6 +69,12 @@ class CheckpointManager:
             "scaler_state_dict": scaler_state_dict,
         }
 
+        # モデル設定 (CC_G2PnPConfig) も保存 — from_checkpoint で復元に使用
+        if hasattr(model_to_save, "config") and dataclasses.is_dataclass(
+            model_to_save.config
+        ):
+            checkpoint["model_config"] = dataclasses.asdict(model_to_save.config)
+
         # アトミック保存: 一時ファイルに書き込み後リネーム
         torch.save(checkpoint, tmp_path)
         tmp_path.rename(path)

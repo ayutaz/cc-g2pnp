@@ -22,7 +22,10 @@ def _compute_cer(
     ref_lengths: torch.Tensor,
     vocabulary: PnPVocabulary,
 ) -> float:
-    """Compute PnP Character Error Rate.
+    """Compute PnP token error rate.
+
+    Uses ``jiwer.wer`` on space-joined token strings so that each PnP token
+    (katakana mora / prosody symbol) is treated as an atomic unit.
 
     Args:
         predictions: Predicted PnP label ID sequences (one per sample).
@@ -31,7 +34,7 @@ def _compute_cer(
         vocabulary: PnP vocabulary for ID-to-token conversion.
 
     Returns:
-        Average CER over all valid samples.
+        Macro-average token error rate over all valid samples.
     """
     id_to_token = vocabulary.id_to_token
     blank_id = vocabulary.blank_id
@@ -48,7 +51,7 @@ def _compute_cer(
 
         ref_str = " ".join(ref_tokens)
         pred_str = " ".join(pred_tokens)
-        total_cer += jiwer.cer(ref_str, pred_str)
+        total_cer += jiwer.wer(ref_str, pred_str)
         count += 1
 
     return total_cer / max(count, 1)
