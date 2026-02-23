@@ -99,6 +99,34 @@ class TestWithDDP:
         for call in mock_dist.all_reduce.call_args_list:
             assert call.kwargs["op"] == "avg_sentinel"
 
+    @patch("cc_g2pnp.training.distributed.dist")
+    def test_reduce_metrics_sum_keys(self, mock_dist):
+        mock_dist.is_initialized.return_value = True
+        mock_dist.ReduceOp.AVG = "avg_sentinel"
+        mock_dist.ReduceOp.SUM = "sum_sentinel"
+
+        recorded_ops = {}
+
+        def fake_all_reduce(tensor, op):
+            # op を記録してテンソルはそのまま返す
+            recorded_ops[len(recorded_ops)] = op
+            tensor.fill_(1.0)
+
+        mock_dist.all_reduce.side_effect = fake_all_reduce
+
+        metrics = {"val_loss": 0.5, "val_num_samples": 100}
+        reduce_metrics(
+            metrics, torch.device("cpu"),
+            sum_keys=frozenset({"val_num_samples"}),
+        )
+
+        assert mock_dist.all_reduce.call_count == 2
+        # val_loss は AVG, val_num_samples は SUM
+        calls = mock_dist.all_reduce.call_args_list
+        ops_used = [call.kwargs["op"] for call in calls]
+        assert "avg_sentinel" in ops_used
+        assert "sum_sentinel" in ops_used
+
 
 # ---------------------------------------------------------------------------
 # Tests for setup_ddp

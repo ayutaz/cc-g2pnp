@@ -104,6 +104,15 @@ class TrainingConfig:
                 f"<= learning_rate ({self.learning_rate})"
             )
             raise ValueError(msg)
+        if self.weight_decay < 0:
+            msg = f"weight_decay must be >= 0, got {self.weight_decay}"
+            raise ValueError(msg)
+        if not isinstance(self.betas, tuple) or len(self.betas) != 2:
+            msg = f"betas must be a tuple of 2 floats, got {self.betas}"
+            raise ValueError(msg)
+        if not (0 <= self.betas[0] < 1 and 0 <= self.betas[1] < 1):
+            msg = f"betas values must be in [0, 1), got {self.betas}"
+            raise ValueError(msg)
         if self.total_steps <= 0:
             msg = f"total_steps must be positive, got {self.total_steps}"
             raise ValueError(msg)
@@ -137,8 +146,17 @@ class TrainingConfig:
         if self.keep_last_n < 1:
             msg = f"keep_last_n must be >= 1, got {self.keep_last_n}"
             raise ValueError(msg)
+        if self.seed < 0:
+            msg = f"seed must be >= 0, got {self.seed}"
+            raise ValueError(msg)
         if self.max_steps is not None and self.max_steps <= 0:
             msg = f"max_steps must be positive or None, got {self.max_steps}"
+            raise ValueError(msg)
+        if self.max_steps is not None and self.max_steps <= self.warmup_steps:
+            msg = (
+                f"max_steps ({self.max_steps}) must be "
+                f"> warmup_steps ({self.warmup_steps})"
+            )
             raise ValueError(msg)
 
     @property
@@ -153,6 +171,8 @@ class TrainingConfig:
         """Compute ExponentialLR gamma so that LR decays from learning_rate to final_learning_rate.
 
         gamma = (final_lr / lr) ** (1 / (effective_steps - warmup_steps))
+
+        When learning_rate == final_learning_rate, returns 1.0 (no decay).
         """
         decay_steps = self.effective_steps - self.warmup_steps
         return (self.final_learning_rate / self.learning_rate) ** (1.0 / decay_steps)

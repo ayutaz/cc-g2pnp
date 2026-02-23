@@ -41,25 +41,30 @@ class G2PnPDataset(IterableDataset):
         *,
         max_input_len: int = 512,
         min_input_len: int = 2,
+        shuffle_seed: int | None = None,
     ) -> None:
         super().__init__()
         self._subset = subset
         self._streaming = streaming
         self._max_input_len = max_input_len
         self._min_input_len = min_input_len
+        self._shuffle_seed = shuffle_seed
 
         self._tokenizer = G2PnPTokenizer()
         self._vocab = PnPVocabulary()
 
     def _load_stream(self) -> Iterable[dict]:
         """Load ReazonSpeech text-only stream."""
-        return load_dataset(
+        ds = load_dataset(
             _REAZON_DATASET,
             self._subset,
             split="train",
             streaming=self._streaming,
             trust_remote_code=True,
         ).select_columns(["name", "transcription"])
+        if self._shuffle_seed is not None and self._streaming:
+            ds = ds.shuffle(seed=self._shuffle_seed, buffer_size=10_000)
+        return ds
 
     def __iter__(self) -> Iterator[dict]:
         total = 0

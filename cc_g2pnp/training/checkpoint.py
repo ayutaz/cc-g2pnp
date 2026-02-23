@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import pickle
 from pathlib import Path
 
 import torch
@@ -34,8 +35,11 @@ class CheckpointManager:
         scheduler: torch.optim.lr_scheduler.LRScheduler,
         config: object,
         metrics: dict[str, float] | None = None,
+        scaler_state_dict: dict | None = None,
     ) -> Path:
         """チェックポイントを保存する。
+
+        一時ファイルに書き込み後、アトミックにリネームする。
 
         Args:
             step: 現在のトレーニングステップ。
@@ -44,11 +48,13 @@ class CheckpointManager:
             scheduler: スケジューラ。
             config: TrainingConfig (dataclass)。
             metrics: メトリクス辞書。
+            scaler_state_dict: GradScaler の state_dict (AMP float16 使用時)。
 
         Returns:
             保存したファイルのパス。
         """
         path = self.checkpoint_dir / f"step_{step:08d}.pt"
+        tmp_path = path.with_suffix(".pt.tmp")
 
         # DDP モデルの場合は module から state_dict を取得
         model_to_save = model.module if hasattr(model, "module") else model
@@ -60,9 +66,12 @@ class CheckpointManager:
             "scheduler_state_dict": scheduler.state_dict(),
             "config": dataclasses.asdict(config),
             "metrics": metrics,
+            "scaler_state_dict": scaler_state_dict,
         }
 
-        torch.save(checkpoint, path)
+        # アトミック保存: 一時ファイルに書き込み後リネーム
+        torch.save(checkpoint, tmp_path)
+        tmp_path.rename(path)
         logger.info("Checkpoint saved: %s", path)
 
         self.cleanup()
@@ -71,13 +80,27 @@ class CheckpointManager:
     def load_latest(self) -> dict | None:
         """最新のチェックポイントを読み込む。
 
+        最新ファイルが破損している場合、1つ前のチェックポイントにフォールバックする。
+
         Returns:
             チェックポイント辞書。なければ None。
         """
         checkpoints = self._sorted_checkpoints()
         if not checkpoints:
             return None
-        return self.load(checkpoints[-1])
+
+        # 最新から順に試行し、破損時はフォールバック
+        for ckpt_path in reversed(checkpoints):
+            try:
+                return self.load(ckpt_path)
+            except (RuntimeError, EOFError, OSError, pickle.UnpicklingError) as e:
+                logger.warning(
+                    "Failed to load checkpoint %s: %s. Trying previous.",
+                    ckpt_path,
+                    e,
+                )
+        logger.error("All checkpoints are corrupted")
+        return None
 
     def load(self, path: str | Path) -> dict:
         """指定パスのチェックポイントを読み込む。
@@ -96,7 +119,8 @@ class CheckpointManager:
             msg = f"Checkpoint not found: {path}"
             raise FileNotFoundError(msg)
         logger.info("Loading checkpoint: %s", path)
-        return torch.load(path, weights_only=False)
+        # map_location="cpu" で読み込み、呼び出し元で適切なデバイスに移動する
+        return torch.load(path, weights_only=False, map_location="cpu")
 
     def cleanup(self) -> None:
         """古いチェックポイントを削除する。
@@ -112,5 +136,12 @@ class CheckpointManager:
     def _sorted_checkpoints(self) -> list[Path]:
         """ステップ番号でソートされたチェックポイントファイルリストを返す。"""
         checkpoints = list(self.checkpoint_dir.glob("step_*.pt"))
-        checkpoints.sort(key=lambda p: int(p.stem.split("_")[1]))
-        return checkpoints
+        valid: list[tuple[int, Path]] = []
+        for p in checkpoints:
+            try:
+                step_num = int(p.stem.split("_")[1])
+                valid.append((step_num, p))
+            except (ValueError, IndexError):
+                logger.warning("Skipping invalid checkpoint filename: %s", p)
+        valid.sort(key=lambda x: x[0])
+        return [p for _, p in valid]

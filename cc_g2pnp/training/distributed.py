@@ -50,18 +50,22 @@ def get_world_size() -> int:
 
 
 def reduce_metrics(
-    metrics: dict[str, float], device: torch.device
+    metrics: dict[str, float],
+    device: torch.device,
+    sum_keys: frozenset[str] = frozenset(),
 ) -> dict[str, float]:
-    """全プロセスからメトリクスを平均化する。
+    """全プロセスからメトリクスを集約する。
 
+    デフォルトでは平均化 (AVG)、sum_keys に含まれるキーは合計 (SUM)。
     DDP未初期化の場合はそのまま返す。
 
     Args:
         metrics: {"loss": 0.5, ...}
         device: テンソルを作成するデバイス
+        sum_keys: SUM で集約するキーの集合 (例: サンプル数など)
 
     Returns:
-        平均化されたメトリクス辞書
+        集約されたメトリクス辞書
     """
     if not dist.is_initialized():
         return metrics
@@ -69,7 +73,8 @@ def reduce_metrics(
     result = {}
     for key, value in metrics.items():
         tensor = torch.tensor(value, device=device)
-        dist.all_reduce(tensor, op=dist.ReduceOp.AVG)
+        op = dist.ReduceOp.SUM if key in sum_keys else dist.ReduceOp.AVG
+        dist.all_reduce(tensor, op=op)
         result[key] = tensor.item()
     return result
 

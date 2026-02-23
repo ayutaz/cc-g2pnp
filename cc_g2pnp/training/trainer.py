@@ -38,6 +38,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_VAL_NUM_SAMPLES_KEY = frozenset({"val_num_samples"})
+
 
 class Trainer:
     """CC-G2PnP モデルの訓練を管理するメインクラス。"""
@@ -123,7 +125,10 @@ class Trainer:
             label_pad_id=-100,
         )
 
-        # 12. チェックポイントからの復元
+        # 12. エポックカウンタ (データ再開時のシャッフルシード用)
+        self._epoch = 0
+
+        # 13. チェックポイントからの復元
         self.global_step = self._restore_checkpoint()
 
     def train(self) -> None:
@@ -161,6 +166,7 @@ class Trainer:
                     batch = next(data_iter)
                 except StopIteration:
                     logger.info("Epoch ended at step %d, restarting data iterator", step)
+                    self._epoch += 1
                     data_iter = self._create_data_iterator()
                     batch = next(data_iter)
 
@@ -171,7 +177,7 @@ class Trainer:
                 if config.use_ddp:
                     step_metrics = reduce_metrics(step_metrics, self.device)
 
-                # ログ
+                # ログ (step=0 も含む: 初期 loss の記録に有用)
                 if step % config.log_every_n_steps == 0 and self.logger is not None:
                     self.logger.log_metrics(
                         {
@@ -200,7 +206,10 @@ class Trainer:
                         self.model, val_batches,
                     )
                     if config.use_ddp:
-                        val_metrics = reduce_metrics(val_metrics, self.device)
+                        val_metrics = reduce_metrics(
+                            val_metrics, self.device,
+                            sum_keys=_VAL_NUM_SAMPLES_KEY,
+                        )
                     if self.logger is not None:
                         self.logger.log_metrics(val_metrics, step=step)
                     if is_main_process():
@@ -218,27 +227,19 @@ class Trainer:
                     and step % config.save_every_n_steps == 0
                     and is_main_process()
                 ):
-                    self.checkpoint_manager.save(
-                        step=step,
-                        model=self.model,
-                        optimizer=self.optimizer,
-                        scheduler=self.scheduler,
-                        config=config,
-                        metrics=step_metrics,
-                    )
+                    self._save_checkpoint(step, step_metrics)
+                    # DDP: 他のランクが save 完了を待つ
+                    if config.use_ddp:
+                        import torch.distributed as _dist
+
+                        _dist.barrier()
 
             # 最終ステップ更新
             self.global_step = effective_steps
 
             # 最終チェックポイント保存
             if is_main_process():
-                self.checkpoint_manager.save(
-                    step=effective_steps,
-                    model=self.model,
-                    optimizer=self.optimizer,
-                    scheduler=self.scheduler,
-                    config=config,
-                )
+                self._save_checkpoint(effective_steps)
                 logger.info("Training complete at step %d", effective_steps)
 
         finally:
@@ -306,6 +307,20 @@ class Trainer:
             else float(grad_norm),
         }
 
+    def _save_checkpoint(
+        self, step: int, metrics: dict[str, float] | None = None,
+    ) -> None:
+        """チェックポイントを保存する (GradScaler state_dict を含む)。"""
+        self.checkpoint_manager.save(
+            step=step,
+            model=self.model,
+            optimizer=self.optimizer,
+            scheduler=self.scheduler,
+            config=self.training_config,
+            metrics=metrics,
+            scaler_state_dict=self.scaler.state_dict(),
+        )
+
     def _create_data_iterator(self) -> Iterator:
         """データイテレータを作成する。
 
@@ -317,6 +332,7 @@ class Trainer:
         dataset = G2PnPDataset(
             subset=self.training_config.dataset_subset,
             streaming=True,
+            shuffle_seed=self.training_config.seed + self._epoch,
         )
         sampler = dynamic_batch_sampler(
             dataset, max_tokens=self.training_config.max_tokens_per_batch,
@@ -383,6 +399,11 @@ class Trainer:
         # Optimizer/Scheduler state_dict 復元
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+        # GradScaler state_dict 復元
+        scaler_sd = checkpoint.get("scaler_state_dict")
+        if scaler_sd is not None:
+            self.scaler.load_state_dict(scaler_sd)
 
         logger.info("Restored checkpoint at step %d", step)
         return step

@@ -61,7 +61,7 @@ class TestSave:
         path = mgr.save(1, model, opt, sched, cfg, metrics={"loss": 0.5})
         ckpt = torch.load(path, weights_only=False)
 
-        expected_keys = {"step", "model_state_dict", "optimizer_state_dict", "scheduler_state_dict", "config", "metrics"}
+        expected_keys = {"step", "model_state_dict", "optimizer_state_dict", "scheduler_state_dict", "config", "metrics", "scaler_state_dict"}
         assert set(ckpt.keys()) == expected_keys
 
     def test_step_value(self, tmp_path):
@@ -197,6 +197,123 @@ class TestCleanup:
         remaining = list((tmp_path / "ckpt").glob("step_*.pt"))
 
         assert len(remaining) == 2
+
+
+class TestAtomicSave:
+    """アトミック保存のテスト。"""
+
+    def test_no_tmp_file_after_save(self, tmp_path):
+        """保存後に .pt.tmp ファイルが残っていないことを確認。"""
+        mgr = CheckpointManager(tmp_path / "ckpt")
+        model, opt, sched, cfg = _make_components()
+
+        mgr.save(1, model, opt, sched, cfg)
+
+        tmp_files = list((tmp_path / "ckpt").glob("*.tmp"))
+        assert len(tmp_files) == 0
+
+    def test_final_file_exists(self, tmp_path):
+        """アトミック保存後に最終ファイルが存在することを確認。"""
+        mgr = CheckpointManager(tmp_path / "ckpt")
+        model, opt, sched, cfg = _make_components()
+
+        path = mgr.save(1, model, opt, sched, cfg)
+
+        assert path.exists()
+        assert path.suffix == ".pt"
+
+
+class TestMapLocation:
+    """map_location のテスト。"""
+
+    def test_load_returns_cpu_tensors(self, tmp_path):
+        """ロードされたテンソルが CPU 上にあることを確認。"""
+        mgr = CheckpointManager(tmp_path / "ckpt")
+        model, opt, sched, cfg = _make_components()
+
+        mgr.save(1, model, opt, sched, cfg)
+        ckpt = mgr.load_latest()
+
+        for value in ckpt["model_state_dict"].values():
+            if isinstance(value, torch.Tensor):
+                assert value.device == torch.device("cpu")
+
+
+class TestCorruptedCheckpointFallback:
+    """破損チェックポイントのフォールバックテスト。"""
+
+    def test_fallback_to_previous(self, tmp_path):
+        """最新が破損している場合、前のチェックポイントにフォールバック。"""
+        mgr = CheckpointManager(tmp_path / "ckpt", keep_last_n=10)
+        model, opt, sched, cfg = _make_components()
+
+        mgr.save(100, model, opt, sched, cfg)
+        mgr.save(200, model, opt, sched, cfg)
+
+        # 最新ファイルを破損させる
+        latest = tmp_path / "ckpt" / "step_00000200.pt"
+        latest.write_bytes(b"corrupted data")
+
+        ckpt = mgr.load_latest()
+        assert ckpt is not None
+        assert ckpt["step"] == 100
+
+    def test_all_corrupted_returns_none(self, tmp_path):
+        """全チェックポイントが破損している場合、None を返す。"""
+        mgr = CheckpointManager(tmp_path / "ckpt", keep_last_n=10)
+        model, opt, sched, cfg = _make_components()
+
+        mgr.save(100, model, opt, sched, cfg)
+        mgr.save(200, model, opt, sched, cfg)
+
+        # 全ファイルを破損させる
+        for f in (tmp_path / "ckpt").glob("step_*.pt"):
+            f.write_bytes(b"corrupted")
+
+        assert mgr.load_latest() is None
+
+
+class TestInvalidFilenames:
+    """不正なファイル名のテスト。"""
+
+    def test_skips_invalid_filenames(self, tmp_path):
+        """不正なファイル名がスキップされることを確認。"""
+        mgr = CheckpointManager(tmp_path / "ckpt", keep_last_n=10)
+        model, opt, sched, cfg = _make_components()
+
+        mgr.save(100, model, opt, sched, cfg)
+
+        # 不正なファイルを配置
+        (tmp_path / "ckpt" / "step_abc.pt").write_bytes(b"bad")
+
+        checkpoints = mgr._sorted_checkpoints()
+        assert len(checkpoints) == 1
+        assert checkpoints[0].name == "step_00000100.pt"
+
+
+class TestScalerStateDictSave:
+    """GradScaler state_dict 保存のテスト。"""
+
+    def test_scaler_state_dict_saved(self, tmp_path):
+        """scaler_state_dict が保存されることを確認。"""
+        mgr = CheckpointManager(tmp_path / "ckpt")
+        model, opt, sched, cfg = _make_components()
+        scaler_sd = {"scale": 65536.0, "growth_factor": 2.0}
+
+        path = mgr.save(1, model, opt, sched, cfg, scaler_state_dict=scaler_sd)
+        ckpt = torch.load(path, weights_only=False, map_location="cpu")
+
+        assert ckpt["scaler_state_dict"] == scaler_sd
+
+    def test_scaler_state_dict_none_by_default(self, tmp_path):
+        """scaler_state_dict がデフォルトで None であることを確認。"""
+        mgr = CheckpointManager(tmp_path / "ckpt")
+        model, opt, sched, cfg = _make_components()
+
+        path = mgr.save(1, model, opt, sched, cfg)
+        ckpt = torch.load(path, weights_only=False, map_location="cpu")
+
+        assert ckpt["scaler_state_dict"] is None
 
 
 class TestE2E:

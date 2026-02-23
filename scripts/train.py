@@ -31,6 +31,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-4, help="Peak learning rate")
     parser.add_argument("--final-lr", type=float, default=1e-5, help="Final learning rate for exponential decay")
     parser.add_argument("--weight-decay", type=float, default=0.01, help="AdamW weight decay coefficient")
+    parser.add_argument(
+        "--betas", type=float, nargs=2, default=[0.9, 0.98],
+        metavar=("BETA1", "BETA2"), help="AdamW beta coefficients",
+    )
     parser.add_argument("--max-grad-norm", type=float, default=1.0, help="Maximum gradient norm for clipping")
 
     # Scheduler
@@ -56,9 +60,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project-name", type=str, default="cc-g2pnp", help="Project name for experiment tracking")
     parser.add_argument("--run-name", type=str, default=None, help="Run name for experiment tracking")
 
-    # AMP
-    parser.add_argument("--amp", action="store_true", default=True, help="Enable automatic mixed precision")
+    # AMP (default: enabled)
     parser.add_argument("--no-amp", action="store_false", dest="amp", help="Disable automatic mixed precision")
+    parser.set_defaults(amp=True)
     parser.add_argument(
         "--amp-dtype", type=str, default="bfloat16", choices=["float16", "bfloat16"], help="AMP data type"
     )
@@ -92,6 +96,7 @@ def main() -> None:
         learning_rate=args.lr,
         final_learning_rate=args.final_lr,
         weight_decay=args.weight_decay,
+        betas=tuple(args.betas),
         max_grad_norm=args.max_grad_norm,
         total_steps=args.total_steps,
         warmup_steps=args.warmup_steps,

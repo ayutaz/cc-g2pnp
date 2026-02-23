@@ -209,8 +209,60 @@ class TestTrainingConfigValidation:
         assert cfg.max_steps is None
 
     def test_max_steps_positive_is_valid(self) -> None:
-        cfg = TrainingConfig(max_steps=100)
+        cfg = TrainingConfig(max_steps=100, warmup_steps=10)
         assert cfg.max_steps == 100
+
+    def test_max_steps_equals_warmup_steps(self) -> None:
+        with pytest.raises(ValueError, match=r"max_steps.*> warmup_steps"):
+            TrainingConfig(max_steps=100, warmup_steps=100)
+
+    def test_max_steps_less_than_warmup_steps(self) -> None:
+        with pytest.raises(ValueError, match=r"max_steps.*> warmup_steps"):
+            TrainingConfig(max_steps=50, warmup_steps=10_000)
+
+    def test_max_steps_greater_than_warmup_valid(self) -> None:
+        cfg = TrainingConfig(max_steps=200, warmup_steps=100)
+        assert cfg.max_steps == 200
+
+    def test_weight_decay_negative(self) -> None:
+        with pytest.raises(ValueError, match="weight_decay must be >= 0"):
+            TrainingConfig(weight_decay=-0.5)
+
+    def test_weight_decay_zero_is_valid(self) -> None:
+        cfg = TrainingConfig(weight_decay=0.0)
+        assert cfg.weight_decay == 0.0
+
+    def test_betas_wrong_type(self) -> None:
+        with pytest.raises(ValueError, match="betas must be a tuple"):
+            TrainingConfig(betas=[0.9, 0.98])  # type: ignore[arg-type]
+
+    def test_betas_wrong_length(self) -> None:
+        with pytest.raises(ValueError, match="betas must be a tuple"):
+            TrainingConfig(betas=(0.9,))  # type: ignore[arg-type]
+
+    def test_betas_value_out_of_range(self) -> None:
+        with pytest.raises(ValueError, match="betas values must be in"):
+            TrainingConfig(betas=(1.5, 0.98))
+
+    def test_betas_negative_value(self) -> None:
+        with pytest.raises(ValueError, match="betas values must be in"):
+            TrainingConfig(betas=(0.9, -0.3))
+
+    def test_betas_one_not_allowed(self) -> None:
+        with pytest.raises(ValueError, match="betas values must be in"):
+            TrainingConfig(betas=(0.9, 1.0))
+
+    def test_betas_valid_custom(self) -> None:
+        cfg = TrainingConfig(betas=(0.95, 0.999))
+        assert cfg.betas == (0.95, 0.999)
+
+    def test_seed_negative(self) -> None:
+        with pytest.raises(ValueError, match="seed must be >= 0"):
+            TrainingConfig(seed=-1)
+
+    def test_seed_zero_is_valid(self) -> None:
+        cfg = TrainingConfig(seed=0)
+        assert cfg.seed == 0
 
 
 class TestTrainingConfigProperties:
@@ -221,8 +273,8 @@ class TestTrainingConfigProperties:
         assert cfg.effective_steps == 1_200_000
 
     def test_effective_steps_with_max_steps(self) -> None:
-        cfg = TrainingConfig(total_steps=1_200_000, max_steps=5_000)
-        assert cfg.effective_steps == 5_000
+        cfg = TrainingConfig(total_steps=1_200_000, max_steps=50_000, warmup_steps=1_000)
+        assert cfg.effective_steps == 50_000
 
     def test_scheduler_gamma_default(self) -> None:
         cfg = TrainingConfig()
