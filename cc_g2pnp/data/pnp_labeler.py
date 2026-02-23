@@ -21,8 +21,12 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import TYPE_CHECKING
 
 import pyopenjtalk
+
+if TYPE_CHECKING:
+    from pyopenjtalk.openjtalk import OpenJTalk
 
 logger = logging.getLogger(__name__)
 
@@ -288,11 +292,18 @@ def _phonemes_to_mora(pp_symbols: list[str]) -> list[str]:
 
 # ── Public API ───────────────────────────────────────────────────
 
-def generate_pnp_labels(text: str) -> list[str]:
+def generate_pnp_labels(
+    text: str,
+    *,
+    jtalk: OpenJTalk | None = None,
+) -> list[str]:
     """Generate PnP label sequence from Japanese text.
 
     Args:
         text: Input Japanese text.
+        jtalk: Optional per-thread ``OpenJTalk`` instance.  When provided,
+            ``pyopenjtalk.extract_fullcontext`` uses it directly instead of
+            the global singleton, avoiding the global ``threading.Lock``.
 
     Returns:
         List of PnP tokens (katakana mora + prosody symbols).
@@ -301,7 +312,7 @@ def generate_pnp_labels(text: str) -> list[str]:
     if not text or not text.strip():
         return []
 
-    labels = pyopenjtalk.extract_fullcontext(text)
+    labels = pyopenjtalk.extract_fullcontext(text, jtalk=jtalk)
     if not labels:
         return []
 

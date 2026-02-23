@@ -78,3 +78,16 @@ def test_intonation_phrase_boundary():
     """Sentence with pause should produce # (IP boundary)."""
     result = generate_pnp_labels("私は学生です。よろしくお願いします。")
     assert "#" in result, "No intonation phrase boundary found"
+
+
+def test_generate_pnp_labels_with_jtalk():
+    """generate_pnp_labels with explicit jtalk instance should match default."""
+    from pyopenjtalk import OPEN_JTALK_DICT_DIR
+    from pyopenjtalk.openjtalk import OpenJTalk
+
+    jtalk = OpenJTalk(dn_mecab=OPEN_JTALK_DICT_DIR)
+    result = generate_pnp_labels("こんにちは", jtalk=jtalk)
+    assert len(result) > 0
+    # Results should match global-instance call
+    default_result = generate_pnp_labels("こんにちは")
+    assert result == default_result
