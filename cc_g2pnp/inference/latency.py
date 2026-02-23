@@ -72,6 +72,12 @@ def measure_start_latency(
 
     Start latency = (tokens_before_start * token_interval) + processing_time
 
+    Note:
+        ``processing_time`` is measured using the full (non-streaming)
+        forward pass on the first ``tokens_before_start`` tokens.  This
+        serves as a practical upper-bound proxy; actual streaming chunk
+        processing is faster because it uses cached activations.
+
     Args:
         model: Trained CC_G2PnP model (will be set to eval mode).
         input_ids: BPE token IDs [1, T] with enough tokens for at least one chunk.
@@ -133,6 +139,9 @@ def measure_chunk_latency(
     """Measure per-chunk processing latency.
 
     Runs full inference and divides total time by number of chunks.
+    The chunk count is an approximation (``ceil(total_frames / chunk_size)``)
+    that may differ slightly from the actual streaming chunk count due to
+    MLA look-ahead frame handling.
 
     Args:
         model: Trained CC_G2PnP model.

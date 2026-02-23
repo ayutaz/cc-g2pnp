@@ -79,6 +79,11 @@ class ConformerConvModule(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Streaming forward using conv_cache instead of zero padding.
 
+        Note:
+            Assumes model is in eval mode (``model.eval()``).  BatchNorm
+            uses running statistics in eval mode; training-mode statistics
+            would be unreliable with small chunk sizes.
+
         Args:
             x: Current chunk ``[B, C, D]`` where C is chunk_size frames.
             conv_cache: Previous GLU output frames ``[B, kernel-1, D]``.

@@ -27,7 +27,9 @@ class EncoderStreamingState:
     """[num_layers] each (k [B, H, cache_len, d_k], v [B, H, cache_len, d_k])."""
 
     processed_frames: int = 0
-    """Total frames processed so far (used for positional encoding offset)."""
+    """Total frames consumed so far.  Incremented by ``chunk_size`` per
+    chunk.  Not used internally by the encoder but exposed for external
+    callers (e.g. progress tracking, latency measurement)."""
 
 
 class ConformerEncoder(nn.Module):

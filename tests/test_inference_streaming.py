@@ -620,3 +620,67 @@ class TestStreamingVsFullInference:
         for label in streaming_combined:
             assert isinstance(label, int)
             assert label >= 0
+
+
+# ── 9. Review-driven additions ────────────────────────────────
+
+
+class TestStreamingReviewFixes:
+    """Tests added from Phase 4 code review findings."""
+
+    def test_streaming_batch_size_two_process_tokens(self, small_model, small_config):
+        """T1: StreamingInference with batch_size > 1."""
+        engine = StreamingInference(small_model)
+        state = engine.reset(batch_size=2)
+
+        bpe_ids = torch.randint(0, small_config.bpe_vocab_size, (2, 3))
+        labels, new_state = engine.process_tokens(bpe_ids, state)
+
+        assert len(labels) == 2
+        assert isinstance(labels[0], list)
+        assert isinstance(labels[1], list)
+        assert new_state.frame_buffer.size(0) == 2
+
+    def test_streaming_batch_size_two_flush(self, small_model, small_config):
+        """T1: flush with batch_size > 1."""
+        engine = StreamingInference(small_model)
+        state = engine.reset(batch_size=2)
+
+        bpe_ids = torch.randint(0, small_config.bpe_vocab_size, (2, 1))
+        _, state_after = engine.process_tokens(bpe_ids, state)
+
+        labels, final_state = engine.flush(state_after)
+
+        assert len(labels) == 2
+        assert final_state.frame_buffer.size(0) == 2
+        assert final_state.frame_buffer.size(1) == 0
+
+    def test_flush_empty_buffer(self, small_model, small_config):
+        """T2: flush with no buffered frames returns empty labels."""
+        engine = StreamingInference(small_model)
+        state = engine.reset(batch_size=1)
+
+        # No tokens fed — buffer is empty
+        labels, returned_state = engine.flush(state)
+
+        assert labels == [[]]
+        assert returned_state.frame_buffer.size(1) == 0
+        # State should be unchanged
+        assert returned_state.encoder_state.processed_frames == 0
+
+    def test_flush_consecutive(self, small_model, small_config):
+        """T3: calling flush twice — second call returns empty."""
+        engine = StreamingInference(small_model)
+        state = engine.reset(batch_size=1)
+
+        # Feed tokens, then flush twice
+        bpe_ids = torch.randint(0, small_config.bpe_vocab_size, (1, 1))
+        _, state_after = engine.process_tokens(bpe_ids, state)
+
+        labels1, state1 = engine.flush(state_after)
+        labels2, state2 = engine.flush(state1)
+
+        # First flush may produce labels; second should be empty
+        assert isinstance(labels1, list)
+        assert labels2 == [[]]
+        assert state2.frame_buffer.size(1) == 0

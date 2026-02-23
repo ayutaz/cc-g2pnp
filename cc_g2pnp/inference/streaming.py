@@ -96,7 +96,10 @@ class StreamingInference:
             # Extract chunk_size + mla_size frames for layer 0 MLA
             chunk = frame_buffer[:, :frames_needed, :]
 
-            # Apply positional encoding dropout (consistent with training)
+            # Add sinusoidal PE to chunk and apply dropout.  In eval mode
+            # dropout is a no-op; the second return value (raw PE table)
+            # is unused because encoder.forward_streaming reads the PE
+            # buffer directly for relative positional bias.
             chunk, _ = self.model.encoder.pos_enc(chunk)
 
             # Process through encoder + CTC head
@@ -129,6 +132,9 @@ class StreamingInference:
         """Process any remaining frames in the buffer.
 
         Pads the remaining frames to form a final chunk if needed.
+        Should be called after all tokens have been fed via
+        :meth:`process_tokens`.  Safe to call when the buffer is empty
+        (returns empty labels) or multiple times in succession.
 
         Args:
             state: Current streaming state.
@@ -158,6 +164,7 @@ class StreamingInference:
             frame_buffer = torch.cat([frame_buffer, padding], dim=1)
 
         chunk = frame_buffer[:, :frames_needed, :]
+        # See process_tokens for why pos_enc is called here.
         chunk, _ = self.model.encoder.pos_enc(chunk)
 
         log_probs, encoder_state = self.model.forward_streaming(
