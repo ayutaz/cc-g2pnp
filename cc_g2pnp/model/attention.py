@@ -157,3 +157,64 @@ class ChunkAwareAttention(nn.Module):
         out = torch.matmul(attn, v)
         out = out.transpose(1, 2).contiguous().view(b, t, -1)
         return self.dropout(self.w_out(out))
+
+    def forward_streaming(
+        self,
+        x: torch.Tensor,
+        pos_enc: torch.Tensor,
+        kv_cache: tuple[torch.Tensor, torch.Tensor],
+        past_context: int,
+        mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        """Streaming forward with KV cache.
+
+        Args:
+            x: Current chunk ``[B, C, D]`` (pre-norm applied internally).
+            pos_enc: Positional encoding ``[1, cache_len+C, D]``.
+            kv_cache: ``(k_cache [B, H, cache_len, d_k],
+                v_cache [B, H, cache_len, d_k])``.
+            past_context: Maximum number of cached frames to keep.
+            mask: Optional mask ``[C, cache_len+C]``.
+
+        Returns:
+            ``(output [B, C, D], new_kv_cache)``
+        """
+        x_normed = self.norm(x)
+        b, c, _ = x_normed.shape
+
+        # Q from current chunk only
+        q = self.w_q(x_normed).view(b, c, self.num_heads, self.d_k).transpose(1, 2)
+
+        # K, V from current chunk
+        k_new = self.w_k(x_normed).view(b, c, self.num_heads, self.d_k).transpose(1, 2)
+        v_new = self.w_v(x_normed).view(b, c, self.num_heads, self.d_k).transpose(1, 2)
+
+        # Concatenate with cache
+        k_cache, v_cache = kv_cache
+        k = torch.cat([k_cache, k_new], dim=2)  # [B, H, cache_len+C, d_k]
+        v = torch.cat([v_cache, v_new], dim=2)  # [B, H, cache_len+C, d_k]
+
+        # Attention scores: Q attends to all of K
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
+
+        # Relative positional bias
+        total_len = k.size(2)
+        pos_k = self.pos_k(pos_enc)  # [1, total_len, D]
+        pos_k = pos_k.view(1, total_len, self.num_heads, self.d_k).transpose(1, 2)
+        pos_bias = torch.matmul(q, pos_k.transpose(-2, -1)) / math.sqrt(self.d_k)
+        scores = scores + pos_bias
+
+        if mask is not None:
+            scores = scores.masked_fill(~mask.unsqueeze(0).unsqueeze(0), float("-inf"))
+
+        attn = F.softmax(scores, dim=-1)
+        attn = self.attn_dropout(attn)
+
+        out = torch.matmul(attn, v)  # [B, H, C, d_k]
+        out = out.transpose(1, 2).contiguous().view(b, c, -1)
+
+        # Update KV cache: keep last past_context frames
+        new_k = k[:, :, -past_context:] if k.size(2) > past_context else k
+        new_v = v[:, :, -past_context:] if v.size(2) > past_context else v
+
+        return self.dropout(self.w_out(out)), (new_k, new_v)

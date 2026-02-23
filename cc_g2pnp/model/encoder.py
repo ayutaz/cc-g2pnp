@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import torch
@@ -13,6 +14,20 @@ from cc_g2pnp.model.positional_encoding import RelativePositionalEncoding
 
 if TYPE_CHECKING:
     from cc_g2pnp.model.config import CC_G2PnPConfig
+
+
+@dataclass
+class EncoderStreamingState:
+    """Per-layer caches for streaming inference."""
+
+    conv_caches: list[torch.Tensor] = field(default_factory=list)
+    """[num_layers] each [B, kernel-1, D]."""
+
+    kv_caches: list[tuple[torch.Tensor, torch.Tensor]] = field(default_factory=list)
+    """[num_layers] each (k [B, H, cache_len, d_k], v [B, H, cache_len, d_k])."""
+
+    processed_frames: int = 0
+    """Total frames processed so far (used for positional encoding offset)."""
 
 
 class ConformerEncoder(nn.Module):
@@ -87,3 +102,90 @@ class ConformerEncoder(nn.Module):
             "output": x,
             "intermediate_logits": intermediate_logits,
         }
+
+    def init_streaming_state(
+        self, batch_size: int, device: torch.device,
+    ) -> EncoderStreamingState:
+        """Create initial empty streaming state."""
+        cfg = self.config
+        d_k = cfg.d_model // cfg.num_heads
+
+        conv_caches = [
+            torch.zeros(batch_size, cfg.conv_kernel_size - 1, cfg.d_model, device=device)
+            for _ in range(cfg.num_layers)
+        ]
+        kv_caches = [
+            (
+                torch.zeros(batch_size, cfg.num_heads, 0, d_k, device=device),
+                torch.zeros(batch_size, cfg.num_heads, 0, d_k, device=device),
+            )
+            for _ in range(cfg.num_layers)
+        ]
+        return EncoderStreamingState(
+            conv_caches=conv_caches,
+            kv_caches=kv_caches,
+            processed_frames=0,
+        )
+
+    def forward_streaming(
+        self,
+        chunk_frames: torch.Tensor,
+        state: EncoderStreamingState,
+    ) -> tuple[dict[str, torch.Tensor], EncoderStreamingState]:
+        """Process a chunk through all layers with streaming caches.
+
+        Layer 0 receives ``chunk_size + mla_size`` frames to support MLA
+        look-ahead; after layer 0 the output is trimmed to ``chunk_size``
+        frames. Layers 1+ process only ``chunk_size`` frames.
+
+        Args:
+            chunk_frames: ``[B, chunk_size + mla_size, D]`` (already
+                embedded + upsampled).
+            state: Current streaming state.
+
+        Returns:
+            ``({"output": [B, chunk_size, D]}, updated_state)``
+        """
+        cfg = self.config
+        chunk_size = cfg.chunk_size
+
+        new_conv_caches: list[torch.Tensor] = []
+        new_kv_caches: list[tuple[torch.Tensor, torch.Tensor]] = []
+
+        x = chunk_frames
+
+        for i, layer in enumerate(self.layers):
+            # Positional encoding covers cached + current frames
+            kv_len = state.kv_caches[i][0].size(2)
+            current_len = x.size(1)
+            total_len = kv_len + current_len
+
+            # Use positions [0, total_len) — relative positional bias
+            # depends on Q-K distance, not absolute position
+            pos_enc: torch.Tensor = self.pos_enc.pe[:, :total_len]
+
+            # No mask needed in streaming: Q attends to all cached + current
+            x, new_attn_cache, new_conv_cache = layer.forward_streaming(
+                x, pos_enc, state.kv_caches[i], state.conv_caches[i],
+                cfg.past_context, mask=None,
+            )
+
+            new_kv_caches.append(new_attn_cache)
+            new_conv_caches.append(new_conv_cache)
+
+            # After layer 0, trim MLA look-ahead frames
+            if i == 0 and x.size(1) > chunk_size:
+                x = x[:, :chunk_size, :]
+
+            # Intermediate CTC at designated layers
+            if i in self._intermediate_ctc_layers:
+                inter_logits = self.ctc_projection(x)
+                x = x + self.ctc_to_hidden(inter_logits)
+
+        updated_state = EncoderStreamingState(
+            conv_caches=new_conv_caches,
+            kv_caches=new_kv_caches,
+            processed_frames=state.processed_frames + chunk_size,
+        )
+
+        return {"output": x}, updated_state

@@ -60,3 +60,35 @@ class ConformerBlock(nn.Module):
         x = x + self.conv(x)
         x = x + self.ff_residual_factor * self.ffn2(x)
         return self.final_norm(x)
+
+    def forward_streaming(
+        self,
+        x: torch.Tensor,
+        pos_enc: torch.Tensor,
+        attn_cache: tuple[torch.Tensor, torch.Tensor],
+        conv_cache: torch.Tensor,
+        past_context: int,
+        mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
+        """Streaming forward with caches.
+
+        Args:
+            x: Input tensor ``[B, C, D]``.
+            pos_enc: Positional encoding ``[1, cache_len+C, D]``.
+            attn_cache: KV cache for attention.
+            conv_cache: Conv cache ``[B, kernel-1, D]``.
+            past_context: Maximum number of cached KV frames.
+            mask: Optional attention mask ``[C, cache_len+C]``.
+
+        Returns:
+            ``(output [B, C, D], new_attn_cache, new_conv_cache)``
+        """
+        x = x + self.ff_residual_factor * self.ffn1(x)
+        attn_out, new_attn_cache = self.attention.forward_streaming(
+            x, pos_enc, attn_cache, past_context, mask,
+        )
+        x = x + attn_out
+        conv_out, new_conv_cache = self.conv.forward_streaming(x, conv_cache)
+        x = x + conv_out
+        x = x + self.ff_residual_factor * self.ffn2(x)
+        return self.final_norm(x), new_attn_cache, new_conv_cache

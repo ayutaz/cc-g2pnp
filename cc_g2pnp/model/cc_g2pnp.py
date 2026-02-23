@@ -8,7 +8,7 @@ from torch import nn
 from cc_g2pnp.model.config import CC_G2PnPConfig
 from cc_g2pnp.model.ctc_decoder import CTCHead, greedy_decode
 from cc_g2pnp.model.embedding import TokenEmbedding
-from cc_g2pnp.model.encoder import ConformerEncoder
+from cc_g2pnp.model.encoder import ConformerEncoder, EncoderStreamingState
 
 
 class CC_G2PnP(nn.Module):
@@ -117,3 +117,35 @@ class CC_G2PnP(nn.Module):
         """
         output = self(input_ids, input_lengths)
         return greedy_decode(output["log_probs"], blank_id=self.config.blank_id)
+
+    def init_streaming_state(self, batch_size: int) -> EncoderStreamingState:
+        """Create initial empty streaming state.
+
+        Args:
+            batch_size: Batch size for the streaming session.
+
+        Returns:
+            Initial encoder streaming state with zeroed caches.
+        """
+        device = next(self.parameters()).device
+        return self.encoder.init_streaming_state(batch_size, device)
+
+    @torch.no_grad()
+    def forward_streaming(
+        self,
+        chunk_frames: torch.Tensor,
+        state: EncoderStreamingState,
+    ) -> tuple[torch.Tensor, EncoderStreamingState]:
+        """Process pre-embedded chunk frames through encoder + CTC head.
+
+        Args:
+            chunk_frames: ``[B, chunk_size + mla_size, D]``
+                (already embedded and upsampled).
+            state: Current encoder streaming state.
+
+        Returns:
+            ``(log_probs [B, chunk_size, V], updated_state)``
+        """
+        enc_out, new_state = self.encoder.forward_streaming(chunk_frames, state)
+        log_probs = self.ctc_head(enc_out["output"])
+        return log_probs, new_state
