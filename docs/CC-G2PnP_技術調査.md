@@ -432,7 +432,7 @@ CC-G2PnP論文のPnP系列生成の参考実装として有用。
 - **CC-G2PnPとの関連**: U2フレームワーク（streaming/non-streaming統一）
 - **再現実装での有用性**: 統一アーキテクチャの設計パターンの参考
 
-### 4.5 推奨方針 → 実装完了 (Phase 2 モデル + Phase 3 学習)
+### 4.5 推奨方針 → 実装完了 (Phase 0-5)
 
 既存フレームワークを**参考**にしつつ、**PyTorchベースでスクラッチ実装**済み:
 - NeMoからchunk-aware streamingのマスク生成パターンを参考 → `create_chunk_mask`/`create_mla_mask` (vectorized)
@@ -440,7 +440,10 @@ CC-G2PnP論文のPnP系列生成の参考実装として有用。
 - ESPnet Issue #4031を参考にDDP設定 → `find_unused_parameters=True`
 - SpeechBrainからDynamic Chunk Trainingのパターンを参考
 - 学習パイプライン: Trainer + TrainingConfig + AdamW (decay/no_decay) + ExponentialLR + CheckpointManager + DDP + AMP + W&B (必須)
+- ストリーミング推論: Conv cache + KV cache + MLA look-ahead
+- 評価パイプライン: 6メトリクス (`jiwer.wer` ベース) + 4ドメインビルトインデータ + batch/streaming推論
 - 外部フレームワークへの依存なし（PyTorch標準のみ）、論文仕様を忠実に再現
+- 458テスト PASS、ruff clean
 
 ---
 
@@ -481,7 +484,7 @@ CC-G2PnP論文のPnP系列生成の参考実装として有用。
 
 ### 5.4 論文コードの公開状況
 
-- **CC-G2PnPのコードは未公開**（2026年2月時点、提出直後のため）→ **本リポジトリで再現実装中** (Phase 3完了: モデルコア84M params + 学習パイプライン + スモールスケール検証済み)
+- **CC-G2PnPのコードは未公開**（2026年2月時点、提出直後のため）→ **本リポジトリで再現実装中** (Phase 5完了: モデルコア84M params + 学習パイプライン + ストリーミング推論 + 評価パイプライン、458テスト PASS)
 - **Dict-DNN韻律予測モデルも未公開**（Park et al., Interspeech 2022）→ pyopenjtalk full-context label解析で代替実装済み
 - **6D-Eval評価データセットも未公開**
 - 今後r9y9のGitHubリポジトリで公開される可能性あり
@@ -556,6 +559,8 @@ CER = (Substitutions + Deletions + Insertions) / Reference_Length × 100
 ```
 - Levenshtein距離ベース、0に近いほど高性能
 - 計算ライブラリ: `jiwer` (pip install jiwer)
+
+**実装上の注意**: PnPトークンは多文字カタカナ（キョ, シャ等）を含むため、`jiwer.cer`（Unicode文字単位）ではなく `jiwer.wer`（スペース区切り単語単位）を使用する。トークン列をスペースで結合して渡す: `jiwer.wer("キョ * ー ワ", "キョ ー ワ")`
 
 **SER (Sentence Error Rate)**:
 ```
@@ -752,7 +757,7 @@ tqdm, numpy, pandas
 | リスク | 影響度 | 対策 |
 |---|---|---|
 | Dict-DNN韻律予測モデルが入手不可 | ~~高~~ **対応済** | pyopenjtalkのfull-context label解析で代替実装済み（ttslearnのpp_symbols関数ベース → CC-G2PnP記法変換） |
-| 6D-Eval評価データが非公開 | **高** | 独自テストセットで代替（複数ドメインのテキストに手動韻律アノテーション）、または著者に問い合わせ |
+| 6D-Eval評価データが非公開 | ~~高~~ **対応済** | 4ドメイン×10文のビルトインデータ + EvalDataGenerator で代替実装済み。pyopenjtalk出力をground truthとした自動評価 |
 | 1500万件のデータ前処理が膨大 | 中 | HuggingFace datasetsのstreaming + 前処理結果のキャッシュ。並列処理で高速化 |
 | 1.2Mステップの学習時間 | 中 | AMP (bfloat16/float16) + マルチGPU (DDP) **実装済み** |
 | CTC収束不安定 | ~~中~~ **対策済** | `zero_infinity=True`, gradient clipping (max_norm=1.0), LinearLR warmup (10,000 steps) **全て実装済み** |
