@@ -13,9 +13,13 @@ from typing import TYPE_CHECKING
 from datasets import load_dataset
 from torch.utils.data import IterableDataset
 
+from cc_g2pnp._patch_pyopenjtalk import apply as _patch_pyopenjtalk
 from cc_g2pnp.data.pnp_labeler import generate_pnp_labels
 from cc_g2pnp.data.tokenizer import G2PnPTokenizer
 from cc_g2pnp.data.vocabulary import PnPVocabulary
+
+# DataLoader の子プロセスでも sudachipy キャッシュが有効になるようにパッチ適用
+_patch_pyopenjtalk()
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
@@ -56,6 +60,8 @@ class G2PnPDataset(IterableDataset):
 
         self._tokenizer = G2PnPTokenizer.get_instance()
         self._vocab = PnPVocabulary()
+        # Set by DataLoader worker_init_fn for per-process OpenJTalk instance
+        self.jtalk = None
 
     def _load_stream(self, rank: int = 0, world_size: int = 1) -> Iterable[dict]:
         """Load ReazonSpeech text-only stream.
@@ -106,7 +112,7 @@ class G2PnPDataset(IterableDataset):
                 continue
 
             # PnP label generation
-            pnp_tokens = generate_pnp_labels(text)
+            pnp_tokens = generate_pnp_labels(text, jtalk=self.jtalk)
             if not pnp_tokens:
                 skipped_pnp += 1
                 continue

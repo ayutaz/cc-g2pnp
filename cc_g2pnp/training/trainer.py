@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 from torch import nn
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from cc_g2pnp.data.collator import DynamicBatchCollator, dynamic_batch_sampler
@@ -41,6 +42,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _VAL_NUM_SAMPLES_KEY = frozenset({"val_num_samples"})
+
+
+def _worker_init_fn(worker_id: int) -> None:
+    """DataLoader ワーカー初期化: 各プロセスに専用 OpenJTalk インスタンスを作成。
+
+    pyopenjtalk は GIL を保持したまま実行されるため、
+    マルチプロセスで並列化することで真の並列化を実現する。
+    """
+    from pyopenjtalk import OPEN_JTALK_DICT_DIR
+    from pyopenjtalk.openjtalk import OpenJTalk
+
+    worker_info = torch.utils.data.get_worker_info()
+    if worker_info is not None and worker_info.dataset is not None:
+        worker_info.dataset.jtalk = OpenJTalk(dn_mecab=OPEN_JTALK_DICT_DIR)
 
 
 class _PrefetchIterator:
@@ -383,27 +398,57 @@ class Trainer:
     def _create_data_iterator(self) -> Iterator:
         """データイテレータを作成する。
 
-        G2PnPDataset -> dynamic_batch_sampler -> DynamicBatchCollator
+        num_workers > 0 の場合:
+            DataLoader(num_workers=N) で前処理をマルチプロセス並列化。
+            各ワーカーに独自の OpenJTalk インスタンスを持たせて GIL を回避。
+        num_workers == 0 の場合:
+            既存の _PrefetchIterator でシングルプロセス prefetch。
 
         Returns:
             コレートされたバッチのイテレータ。
         """
+        config = self.training_config
+        num_workers = config.num_workers
+
         dataset = G2PnPDataset(
-            subset=self.training_config.dataset_subset,
+            subset=config.dataset_subset,
             streaming=True,
-            shuffle_seed=self.training_config.seed + self._epoch,
+            shuffle_seed=config.seed + self._epoch,
             rank=self.rank,
             world_size=self.world_size,
         )
-        sampler = dynamic_batch_sampler(
-            dataset, max_tokens=self.training_config.max_tokens_per_batch,
-        )
-        base_iter = (self.collator(batch) for batch in sampler)
-        return _PrefetchIterator(
-            base_iter,
-            prefetch_count=2,
-            pin_memory=(self.device.type == "cuda"),
-        )
+
+        if num_workers > 0:
+            # DataLoader でマルチプロセス前処理
+            loader = DataLoader(
+                dataset,
+                batch_size=None,  # dataset が dict を1件ずつ yield
+                num_workers=num_workers,
+                worker_init_fn=_worker_init_fn,
+                prefetch_factor=config.prefetch_count,
+                persistent_workers=False,
+            )
+            # DataLoader → dynamic_batch_sampler → collator
+            sampler = dynamic_batch_sampler(
+                loader, max_tokens=config.max_tokens_per_batch,
+            )
+            base_iter = (self.collator(batch) for batch in sampler)
+            return _PrefetchIterator(
+                base_iter,
+                prefetch_count=config.prefetch_count,
+                pin_memory=(self.device.type == "cuda"),
+            )
+        else:
+            # シングルプロセス (従来方式)
+            sampler = dynamic_batch_sampler(
+                dataset, max_tokens=config.max_tokens_per_batch,
+            )
+            base_iter = (self.collator(batch) for batch in sampler)
+            return _PrefetchIterator(
+                base_iter,
+                prefetch_count=config.prefetch_count,
+                pin_memory=(self.device.type == "cuda"),
+            )
 
     def _create_val_batches(self) -> list[dict]:
         """バリデーションバッチを作成する。
