@@ -77,6 +77,13 @@ class TrainingConfig:
     val_every_n_steps: int = 5_000
     """Run validation every N steps."""
 
+    # ── Data pipeline ────────────────────────────────────────────
+    num_workers: int = 4
+    """Number of DataLoader worker processes for parallel preprocessing."""
+
+    prefetch_count: int = 4
+    """Number of batches to prefetch in background (0 = no prefetch)."""
+
     # ── Misc ──────────────────────────────────────────────────────
     seed: int = 42
     """Random seed for reproducibility."""

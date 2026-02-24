@@ -45,6 +45,8 @@ def parse_args() -> argparse.Namespace:
     # Data
     parser.add_argument("--max-tokens", type=int, default=8192, help="Maximum BPE tokens per batch")
     parser.add_argument("--dataset-subset", type=str, default="all", help="ReazonSpeech dataset subset name")
+    parser.add_argument("--num-workers", type=int, default=4, help="DataLoader worker processes for parallel preprocessing")
+    parser.add_argument("--prefetch-count", type=int, default=4, help="Number of batches to prefetch in background")
 
     # Checkpoint
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints", help="Directory to save checkpoints")
@@ -79,7 +81,10 @@ def main() -> None:
     """Entry point for training."""
     from dotenv import load_dotenv
 
+    from cc_g2pnp._patch_pyopenjtalk import apply as _patch_pyopenjtalk
+
     load_dotenv()
+    _patch_pyopenjtalk()
 
     args = parse_args()
 
@@ -103,6 +108,8 @@ def main() -> None:
         max_steps=args.max_steps,
         max_tokens_per_batch=args.max_tokens,
         dataset_subset=args.dataset_subset,
+        num_workers=args.num_workers,
+        prefetch_count=args.prefetch_count,
         checkpoint_dir=args.checkpoint_dir,
         save_every_n_steps=args.save_every,
         keep_last_n=args.keep_last,

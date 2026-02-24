@@ -97,11 +97,15 @@ _VOWEL_OF_KANA["ッ"] = ""
 # ── Regex helpers ────────────────────────────────────────────────
 
 _RE_P3 = re.compile(r"\-(.*?)\+")
+_RE_A1 = re.compile(r"/A:([0-9\-]+)\+")
+_RE_A2 = re.compile(r"\+(\d+)\+")
+_RE_A3 = re.compile(r"\+(\d+)/")
+_RE_F1 = re.compile(r"/F:(\d+)_")
 
 
-def _numeric_feature(regex: str, label: str) -> int | None:
+def _numeric_feature(pattern: re.Pattern[str], label: str) -> int | None:
     """Extract a numeric feature from an HTS label, returning None for 'xx'."""
-    m = re.search(regex, label)
+    m = pattern.search(label)
     if m is None:
         return None
     val = m.group(1)
@@ -154,15 +158,15 @@ def _extract_pp_symbols(labels: list[str]) -> list[str]:
             continue
 
         # Extract features from current label
-        a1 = _numeric_feature(r"/A:([0-9\-]+)\+", lab_curr)
-        a2 = _numeric_feature(r"\+(\d+)\+", lab_curr)
-        a3 = _numeric_feature(r"\+(\d+)/", lab_curr)
-        f1 = _numeric_feature(r"/F:(\d+)_", lab_curr)
+        a1 = _numeric_feature(_RE_A1, lab_curr)
+        a2 = _numeric_feature(_RE_A2, lab_curr)
+        a3 = _numeric_feature(_RE_A3, lab_curr)
+        f1 = _numeric_feature(_RE_F1, lab_curr)
 
         # Extract a2 from next label
         a2_next = None
         if idx + 1 < n:
-            a2_next = _numeric_feature(r"\+(\d+)\+", labels[idx + 1])
+            a2_next = _numeric_feature(_RE_A2, labels[idx + 1])
 
         # Emit phoneme
         result.append(p3)
