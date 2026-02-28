@@ -85,6 +85,8 @@ def main() -> None:
     from cc_g2pnp._patch_pyopenjtalk import apply as _patch_pyopenjtalk
 
     load_dotenv()
+    # CUDA メモリフラグメンテーション低減
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     _patch_pyopenjtalk()
 
     args = parse_args()

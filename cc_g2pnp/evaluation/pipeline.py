@@ -99,7 +99,7 @@ class EvaluationPipeline:
         input_lengths = torch.tensor(lengths, dtype=torch.long, device=self._device)
 
         # Run inference
-        with torch.no_grad():
+        with torch.inference_mode():
             predicted_ids = self.model.inference(input_ids, input_lengths)
 
         return self._decode_ids_to_tokens(predicted_ids)

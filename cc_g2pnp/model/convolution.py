@@ -35,7 +35,7 @@ class ConformerConvModule(nn.Module):
         self.glu = nn.GLU(dim=1)
         self.depthwise_conv = nn.Conv1d(d, d, kernel_size=k, groups=d, bias=False)
         self.batch_norm = nn.BatchNorm1d(d)
-        self.activation = nn.SiLU()
+        self.activation = nn.SiLU(inplace=True)
         self.pointwise_conv2 = nn.Conv1d(d, d, kernel_size=1)
         self.dropout = nn.Dropout(config.dropout)
 

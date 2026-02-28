@@ -61,7 +61,7 @@ class StreamingInference:
             frame_buffer=frame_buffer,
         )
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def process_tokens(
         self,
         bpe_token_ids: torch.Tensor,
@@ -125,7 +125,7 @@ class StreamingInference:
         )
         return decoded, new_state
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def flush(
         self, state: StreamingState,
     ) -> tuple[list[list[int]], StreamingState]:
@@ -186,7 +186,7 @@ class StreamingInference:
         )
         return decoded, new_state
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def process_full(
         self,
         input_ids: torch.Tensor,

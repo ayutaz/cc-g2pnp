@@ -53,6 +53,7 @@ def build_optimizer(model: nn.Module, config: TrainingConfig) -> torch.optim.Ada
         param_groups,
         lr=config.learning_rate,
         betas=config.betas,
+        fused=torch.cuda.is_available(),
     )
 
 

@@ -80,7 +80,7 @@ class CC_G2PnP(nn.Module):
             upsampled_lengths = input_lengths * self.config.upsample_factor
 
             # CTCLoss expects [T, B, V]
-            log_probs_t = log_probs.transpose(0, 1)
+            log_probs_t = log_probs.transpose(0, 1).contiguous()
             final_loss = self.ctc_loss(
                 log_probs_t, targets, upsampled_lengths, target_lengths,
             )
@@ -89,7 +89,7 @@ class CC_G2PnP(nn.Module):
             intermediate_losses: list[torch.Tensor] = []
             for inter_logits in enc_out["intermediate_logits"]:
                 inter_log_probs = torch.log_softmax(inter_logits, dim=-1)
-                inter_log_probs_t = inter_log_probs.transpose(0, 1)
+                inter_log_probs_t = inter_log_probs.transpose(0, 1).contiguous()
                 inter_loss = self.ctc_loss(
                     inter_log_probs_t, targets, upsampled_lengths, target_lengths,
                 )
@@ -104,7 +104,7 @@ class CC_G2PnP(nn.Module):
 
         return result
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def inference(
         self,
         input_ids: torch.Tensor,
@@ -134,7 +134,7 @@ class CC_G2PnP(nn.Module):
         device = next(self.parameters()).device
         return self.encoder.init_streaming_state(batch_size, device)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def forward_streaming(
         self,
         chunk_frames: torch.Tensor,

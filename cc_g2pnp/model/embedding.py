@@ -40,4 +40,5 @@ class TokenEmbedding(nn.Module):
         """
         x = self.embedding(input_ids) * self.scale  # [B, T, D]
         x = self.dropout(x)
-        return torch.repeat_interleave(x, repeats=self.upsample_factor, dim=1)
+        B, T, D = x.shape
+        return x.unsqueeze(2).expand(B, T, self.upsample_factor, D).reshape(B, T * self.upsample_factor, D)
