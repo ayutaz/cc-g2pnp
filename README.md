@@ -15,6 +15,7 @@
 - **バックグラウンドプリフェッチ** — 専用スレッドによるバッチ先読みでデータ転送を並列化
 - **マルチプロセス音素解析** — DataLoader ワーカーごとに独立した OpenJTalk インスタンスで真の並列化
 - **FP16 推論** — 評価パイプラインで CUDA autocast による高速推論
+- **SDPA (Scaled Dot-Product Attention)** — `F.scaled_dot_product_attention` による EFFICIENT_ATTENTION カーネル活用 (`use_flash_attention` フラグで切替)
 - **長さソートバッチング** — 評価時にパディング量を削減するシーケンス長ソート
 - **W&B ロギング** — 学習メトリクスの自動記録・可視化
 - **6 種メトリクス評価** — PnP CER/SER、Normalized PnP CER/SER、Phoneme CER/SER
@@ -179,7 +180,7 @@ print(pipeline.format_results(result))
 ## テスト
 
 ```bash
-# 全テスト実行 (490 件)
+# 全テスト実行 (499 件)
 uv run pytest
 
 # lint チェック

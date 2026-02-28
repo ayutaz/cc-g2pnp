@@ -444,7 +444,7 @@ CC-G2PnP論文のPnP系列生成の参考実装として有用。
 - 評価パイプライン: 6メトリクス (`jiwer.wer` ベース) + 4ドメインビルトインデータ + batch/streaming推論
 - データパイプライン: **ネットワークエラーリトライロジック実装済み** (exponential backoff)
 - 外部フレームワークへの依存なし（PyTorch標準のみ）、論文仕様を忠実に再現
-- 490テスト PASS、ruff clean
+- 499テスト PASS、ruff clean (FlashAttention SDPA テスト含む)
 
 ---
 
