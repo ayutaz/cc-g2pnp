@@ -47,7 +47,7 @@ cc_g2pnp/
 ├── model/             # モデル定義 (Phase 2 ✅)
 │   ├── __init__.py          # 15 public exports
 │   ├── config.py            # CC_G2PnPConfig dataclass
-│   ├── embedding.py         # TokenEmbedding (BPE → D, repeat_interleave ×8)
+│   ├── embedding.py         # TokenEmbedding (BPE → D, expand+contiguous ×8)
 │   ├── positional_encoding.py # RelativePositionalEncoding (sinusoidal)
 │   ├── attention.py         # ChunkAwareAttention + create_chunk_mask/mla_mask + forward_streaming
 │   ├── feed_forward.py      # FeedForwardModule (Macaron half-step)
@@ -225,7 +225,7 @@ tests/
 
 | # | タスク | 詳細 | 難易度 | 状態 |
 |---|---|---|---|---|
-| 2.1 | Embedding + Token Upsampling | `Embedding(65000, 512)` + `sqrt(d_model)` scale + `repeat_interleave(×8)`。入力 [B, T] → [B, T×8, 512] | 低 | ✅ |
+| 2.1 | Embedding + Token Upsampling | `Embedding(65000, 512)` + `sqrt(d_model)` scale + `expand+contiguous(×8)`。入力 [B, T] → [B, T×8, 512] | 低 | ✅ |
 | 2.2 | Causal Convolution Module | LN→Pointwise(D→2D)→GLU→CausalDWConv(k=31)→BN→SiLU→Pointwise→Dropout | 中 | ✅ |
 | 2.3 | Chunk-aware Streaming Attention | MHSA (heads=8) + Shaw et al. 相対位置バイアス (Q*pos_K^T) + chunk-aware mask (vectorized) | **高** | ✅ |
 | 2.4 | Feed-Forward Module | LN→Linear(512→2048)→SiLU→Dropout→Linear(2048→512)→Dropout | 低 | ✅ |
@@ -264,7 +264,7 @@ tests/
 | ファイル | 概要 |
 |---------|------|
 | `cc_g2pnp/model/config.py` | `CC_G2PnPConfig` dataclass + `__post_init__` validation |
-| `cc_g2pnp/model/embedding.py` | `TokenEmbedding` — Embedding(65000,512) → sqrt(d_model) scale → dropout → repeat_interleave ×8 |
+| `cc_g2pnp/model/embedding.py` | `TokenEmbedding` — Embedding(65000,512) → sqrt(d_model) scale → dropout → expand+contiguous ×8 |
 | `cc_g2pnp/model/positional_encoding.py` | `RelativePositionalEncoding` — sinusoidal PE buffer, max_len=5000 |
 | `cc_g2pnp/model/attention.py` | `ChunkAwareAttention` + `create_chunk_mask` + `create_mla_mask` (vectorized) — Shaw et al. relative pos bias |
 | `cc_g2pnp/model/feed_forward.py` | `FeedForwardModule` — LN→Linear(512→2048)→SiLU→Dropout→Linear(2048→512)→Dropout |
@@ -329,7 +329,7 @@ tests/
 | ファイル | 概要 |
 |---------|------|
 | `cc_g2pnp/training/config.py` | `TrainingConfig` dataclass (21フィールド) + `__post_init__` validation + `scheduler_gamma` 自動計算 |
-| `cc_g2pnp/training/optimizer.py` | `build_optimizer` (AdamW, decay/no_decay分離) + `build_scheduler` (LinearLR warmup + ExponentialLR) |
+| `cc_g2pnp/training/optimizer.py` | `build_optimizer` (AdamW, decay/no_decay分離, fused=True) + `build_scheduler` (LinearLR warmup + ExponentialLR) |
 | `cc_g2pnp/training/checkpoint.py` | `CheckpointManager` — save/load/load_latest/cleanup (keep_last_n), DDP対応 |
 | `cc_g2pnp/training/logger.py` | `TrainingLogger` — W&B必須、未ログイン時 RuntimeError、context manager |
 | `cc_g2pnp/training/distributed.py` | `setup_ddp`, `cleanup_ddp`, `is_main_process`, `get_rank`, `get_world_size`, `reduce_metrics`, `wrap_model_ddp` |
@@ -352,7 +352,7 @@ tests/
 |---|---|---|
 | 学習データ | 14,960,911件 | ReazonSpeech転写テキスト |
 | バッチ構成 | 最大8,192トークン/ミニバッチ | Dynamic batching |
-| Optimizer | AdamW (decay/no_decay分離) | LayerNorm・biasはweight decay除外 |
+| Optimizer | AdamW (decay/no_decay分離, fused=True (CUDA時)) | LayerNorm・biasはweight decay除外 |
 | 初期学習率 | 1e-4 | 論文記載 |
 | 最終学習率 | 1e-5 | 論文記載 |
 | weight_decay | 0.01 | ※論文未記載。推定 |
@@ -572,9 +572,10 @@ Phase 3: 学習パイプライン            ████████ ✅ 完了
 Phase 4: 推論・ストリーミング         ████████ ✅ 完了
 Phase 5: 評価                       ████████ ✅ 完了
 Phase 6: アブレーション              ░░░░░░░░░░░░░░░░░░░░░░██ ← 次
+Phase 0-opt: ゼロコスト最適化          ████████ ✅ 完了 (7施策)
 ```
 
-- **Phase 0-5 全完了**（評価パイプラインまで実装済み、458テスト PASS）
+- **Phase 0-5 全完了**（評価パイプラインまで実装済み、465テスト PASS）
 - Phase 6 はPhase 5の評価基盤が前提 → **評価基盤整備済み、フルスケール学習後に実行可能**
 
 ---
@@ -607,5 +608,5 @@ Phase 6: アブレーション              ░░░░░░░░░░░░
 | **M3-infra: 学習基盤完成** | 3 | Trainer/Optimizer/Scheduler/Checkpoint/DDP/AMP/W&B実装完了。344テスト、88%カバレッジ | ✅ 達成 |
 | **M3: スモーク試験完了** | 3 | 10ステップ実行、損失 23.77→10.81、W&B同期OK | ✅ 達成 |
 | **M4: ストリーミング推論動作** | 4 | チャンク単位の逐次推論でPnPラベル出力。376テスト、streaming/latencyテスト完了 | ✅ 達成 |
-| **M5: 評価パイプライン完成** | 5 | 全6メトリクス計算、4ドメインビルトインデータ、batch/streaming推論→評価。458テスト | ✅ 達成 |
+| **M5: 評価パイプライン完成** | 5 | 全6メトリクス計算、4ドメインビルトインデータ、batch/streaming推論→評価。465テスト | ✅ 達成 |
 | **M6: フルスケール学習完了** | 3+6 | 100%データ・1.2Mステップでの学習完了、PnP CER ≈ 1.79（代替評価データ上） | |
