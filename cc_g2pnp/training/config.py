@@ -39,6 +39,10 @@ class TrainingConfig:
     max_tokens_per_batch: int = 8192
     """Maximum BPE tokens per batch (dynamic batching)."""
 
+    max_input_len: int = 512
+    """Maximum BPE token length per sample. Longer samples are filtered out.
+    With upsample_factor=8, T4 (15GB) requires ≤128 to avoid OOM in attention."""
+
     dataset_subset: str = "all"
     """ReazonSpeech dataset subset name."""
 
