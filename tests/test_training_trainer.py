@@ -431,3 +431,84 @@ class TestCollatorKeyMapping:
         assert torch.equal(
             captured_kwargs["target_lengths"], batch["label_lengths"].to(trainer.device)
         )
+
+
+class TestPhase1Optimizations:
+    """Phase 1 最適化のテスト。"""
+
+    def test_reduce_metrics_only_at_log_steps(self, small_model_config, tmp_path):
+        """DDP 時、reduce_metrics は log_every_n_steps ごとにのみ呼ばれる。"""
+        from cc_g2pnp.training.trainer import Trainer
+
+        training_config = TrainingConfig(
+            max_steps=5,
+            use_amp=False,
+            checkpoint_dir=str(tmp_path / "ckpt"),
+            log_every_n_steps=2,
+            save_every_n_steps=100,
+            val_every_n_steps=100,
+            warmup_steps=0,
+            use_ddp=True,
+        )
+
+        with (
+            patch("cc_g2pnp.training.trainer.setup_ddp"),
+            patch("cc_g2pnp.training.trainer.wrap_model_ddp", side_effect=lambda m, r: m),
+            patch("cc_g2pnp.training.trainer.cleanup_ddp"),
+            patch("cc_g2pnp.training.trainer.is_main_process", return_value=True),
+            patch("cc_g2pnp.training.trainer.reduce_metrics", side_effect=lambda m, d, **kw: m) as mock_reduce,
+            patch("torch.cuda.is_available", return_value=False),
+            patch("torch.distributed.barrier"),
+        ):
+            trainer = Trainer(small_model_config, training_config, rank=0, world_size=2)
+            batch = _make_dummy_batch(
+                bpe_vocab_size=small_model_config.bpe_vocab_size,
+                pnp_vocab_size=small_model_config.pnp_vocab_size,
+            )
+
+            trainer._create_data_iterator = MagicMock(
+                return_value=iter([batch] * training_config.max_steps),
+            )
+            trainer._create_val_batches = MagicMock(return_value=[])
+
+            trainer.train()
+
+            # log_every=2, steps 0-4: step 0, 2, 4 でログ → reduce は 3 回
+            # (毎ステップの 5 回ではない)
+            assert mock_reduce.call_count == 3
+
+    def test_empty_cache_called_around_validation(self, small_model_config, tmp_path):
+        """CUDA 環境ではバリデーション前後に empty_cache が呼ばれる。"""
+        from cc_g2pnp.training.trainer import Trainer
+
+        training_config = TrainingConfig(
+            max_steps=3,
+            use_amp=False,
+            checkpoint_dir=str(tmp_path / "ckpt"),
+            log_every_n_steps=1,
+            save_every_n_steps=100,
+            val_every_n_steps=1,
+            warmup_steps=0,
+        )
+
+        trainer = Trainer(small_model_config, training_config)
+        batch = _make_dummy_batch(
+            bpe_vocab_size=small_model_config.bpe_vocab_size,
+            pnp_vocab_size=small_model_config.pnp_vocab_size,
+        )
+
+        trainer._create_data_iterator = MagicMock(
+            return_value=iter([batch] * training_config.max_steps),
+        )
+        # バリデーションバッチを用意 (空でないリスト)
+        trainer._create_val_batches = MagicMock(return_value=[batch])
+
+        with patch("torch.cuda.empty_cache") as mock_empty_cache:
+            trainer.train()
+
+            if trainer.device.type == "cuda":
+                # CUDA: val_every=1, steps 1,2 でバリデーション → 前後で 2*2=4 回
+                assert mock_empty_cache.call_count == 4
+            else:
+                # CPU: empty_cache は呼ばれない
+                mock_empty_cache.assert_not_called()

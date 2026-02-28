@@ -54,15 +54,15 @@ def reduce_metrics(
     device: torch.device,
     sum_keys: frozenset[str] = frozenset(),
 ) -> dict[str, float]:
-    """全プロセスからメトリクスを集約する。
+    """全プロセスからメトリクスを集約する (バッチ化版)。
 
-    デフォルトでは平均化 (AVG)、sum_keys に含まれるキーは合計 (SUM)。
-    DDP未初期化の場合はそのまま返す。
+    メトリクスを AVG/SUM グループに分けて各グループ 1 回ずつ all_reduce を実行。
+    最大 2 回の通信で全メトリクスを集約する。
 
     Args:
         metrics: {"loss": 0.5, ...}
         device: テンソルを作成するデバイス
-        sum_keys: SUM で集約するキーの集合 (例: サンプル数など)
+        sum_keys: SUM で集約するキーの集合
 
     Returns:
         集約されたメトリクス辞書
@@ -70,30 +70,43 @@ def reduce_metrics(
     if not dist.is_initialized():
         return metrics
 
+    keys = list(metrics.keys())
+    if not keys:
+        return {}
+
+    avg_keys = [k for k in keys if k not in sum_keys]
+    sum_key_list = [k for k in keys if k in sum_keys]
+
     result = {}
-    for key, value in metrics.items():
-        tensor = torch.tensor(value, device=device)
-        op = dist.ReduceOp.SUM if key in sum_keys else dist.ReduceOp.AVG
-        dist.all_reduce(tensor, op=op)
-        result[key] = tensor.item()
+
+    if avg_keys:
+        avg_vals = torch.tensor([metrics[k] for k in avg_keys], device=device)
+        dist.all_reduce(avg_vals, op=dist.ReduceOp.AVG)
+        for k, v in zip(avg_keys, avg_vals.tolist(), strict=True):
+            result[k] = v
+
+    if sum_key_list:
+        sum_vals = torch.tensor([metrics[k] for k in sum_key_list], device=device)
+        dist.all_reduce(sum_vals, op=dist.ReduceOp.SUM)
+        for k, v in zip(sum_key_list, sum_vals.tolist(), strict=True):
+            result[k] = v
+
     return result
 
 
 def wrap_model_ddp(
     model: torch.nn.Module,
     device_id: int,
-    find_unused_parameters: bool = True,
+    find_unused_parameters: bool = False,
+    bucket_cap_mb: int = 50,
 ) -> DistributedDataParallel:
     """モデルを DDP でラップする。
-
-    Note:
-        find_unused_parameters=True は Self-conditioned CTC で必要。
-        ESPnet Issue #4031 参照。
 
     Args:
         model: ラップ対象モデル
         device_id: CUDA デバイスID
         find_unused_parameters: 未使用パラメータを探すかどうか
+        bucket_cap_mb: 勾配バケットサイズ (MB)
 
     Returns:
         DDP ラップされたモデル
@@ -102,4 +115,5 @@ def wrap_model_ddp(
         model,
         device_ids=[device_id],
         find_unused_parameters=find_unused_parameters,
+        bucket_cap_mb=bucket_cap_mb,
     )

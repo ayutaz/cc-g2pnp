@@ -347,3 +347,34 @@ class TestEvaluator:
         evaluator.evaluate(model, [batch])
 
         assert all(state is False for state in grad_enabled_states)
+
+    def test_inference_mode_context(self, vocabulary, device):
+        """Evaluation runs under torch.inference_mode()."""
+        inference_mode_states: list[bool] = []
+
+        class InferenceModeCheckModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self._dummy = nn.Parameter(torch.zeros(1))
+                self.config = SimpleNamespace(blank_id=0)
+
+            def forward(self, input_ids, input_lengths, targets=None, target_lengths=None):
+                inference_mode_states.append(torch.is_inference_mode_enabled())
+                batch_size = input_ids.size(0)
+                lp = torch.full((batch_size, 2, 140), -100.0)
+                lp[:, 0, 1] = 0.0
+                lp[:, 1, 0] = 0.0
+                return {"loss": torch.tensor(1.0), "log_probs": lp}
+
+        model = InferenceModeCheckModel()
+        evaluator = Evaluator(vocabulary, device)
+        batch = _make_batch(
+            input_ids=torch.tensor([[100]]),
+            labels=torch.tensor([[1]]),
+            input_lengths=torch.tensor([1]),
+            label_lengths=torch.tensor([1]),
+        )
+
+        evaluator.evaluate(model, [batch])
+
+        assert all(state is True for state in inference_mode_states)

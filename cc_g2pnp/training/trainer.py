@@ -237,22 +237,21 @@ class Trainer:
                 # Train step
                 step_metrics = self.train_step(batch)
 
-                # DDP メトリクス平均化
-                if config.use_ddp:
-                    step_metrics = reduce_metrics(step_metrics, self.device)
+                # ログステップ: DDP メトリクス平均化 + ログ
+                if step % config.log_every_n_steps == 0:
+                    if config.use_ddp:
+                        step_metrics = reduce_metrics(step_metrics, self.device)
+                    if self.logger is not None:
+                        self.logger.log_metrics(
+                            {
+                                "train/loss": step_metrics["loss"],
+                                "train/lr": step_metrics["lr"],
+                                "train/grad_norm": step_metrics["grad_norm"],
+                            },
+                            step=step,
+                        )
 
-                # ログ (step=0 も含む: 初期 loss の記録に有用)
-                if step % config.log_every_n_steps == 0 and self.logger is not None:
-                    self.logger.log_metrics(
-                        {
-                            "train/loss": step_metrics["loss"],
-                            "train/lr": step_metrics["lr"],
-                            "train/grad_norm": step_metrics["grad_norm"],
-                        },
-                        step=step,
-                    )
-
-                # 進捗バー更新
+                # 進捗バー更新 (ローカルメトリクスで更新)
                 if pbar is not None:
                     pbar.set_postfix(
                         loss=f"{step_metrics['loss']:.4f}",
@@ -266,9 +265,13 @@ class Trainer:
                     and step % config.val_every_n_steps == 0
                     and val_batches
                 ):
+                    if self.device.type == "cuda":
+                        torch.cuda.empty_cache()
                     val_metrics = self.evaluator.evaluate(
                         self.model, val_batches,
                     )
+                    if self.device.type == "cuda":
+                        torch.cuda.empty_cache()
                     if config.use_ddp:
                         val_metrics = reduce_metrics(
                             val_metrics, self.device,

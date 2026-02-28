@@ -51,6 +51,7 @@ def greedy_decode(
     results: list[list[int]] = []
     for seq in best:
         collapsed = torch.unique_consecutive(seq)
-        tokens = [t.item() for t in collapsed if t.item() != blank_id]
+        mask = collapsed != blank_id
+        tokens = collapsed[mask].tolist()
         results.append(tokens)
     return results

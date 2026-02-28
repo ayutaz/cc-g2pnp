@@ -92,7 +92,7 @@ class TestWithDDP:
         metrics = {"loss": 0.5, "accuracy": 0.9}
         result = reduce_metrics(metrics, torch.device("cpu"))
 
-        assert mock_dist.all_reduce.call_count == 2
+        assert mock_dist.all_reduce.call_count == 1
         assert result["loss"] == 0.25
         assert result["accuracy"] == 0.25
 
@@ -126,6 +126,31 @@ class TestWithDDP:
         ops_used = [call.kwargs["op"] for call in calls]
         assert "avg_sentinel" in ops_used
         assert "sum_sentinel" in ops_used
+
+    @patch("cc_g2pnp.training.distributed.dist")
+    def test_reduce_metrics_batched_single_all_reduce(self, mock_dist):
+        """全キーが AVG の場合、all_reduce は 1 回のみ。"""
+        mock_dist.is_initialized.return_value = True
+        mock_dist.ReduceOp.AVG = "avg_sentinel"
+
+        def fake_all_reduce(tensor, op):
+            tensor.fill_(0.5)
+
+        mock_dist.all_reduce.side_effect = fake_all_reduce
+
+        metrics = {"loss": 1.0, "cer": 0.5, "lr": 0.001}
+        result = reduce_metrics(metrics, torch.device("cpu"))
+
+        assert mock_dist.all_reduce.call_count == 1
+        assert set(result.keys()) == {"loss", "cer", "lr"}
+
+    @patch("cc_g2pnp.training.distributed.dist")
+    def test_reduce_metrics_empty(self, mock_dist):
+        """空の metrics dict でエラーにならない。"""
+        mock_dist.is_initialized.return_value = True
+        result = reduce_metrics({}, torch.device("cpu"))
+        assert result == {}
+        mock_dist.all_reduce.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +225,8 @@ class TestWrapModelDDP:
         mock_ddp_cls.assert_called_once_with(
             model,
             device_ids=[0],
-            find_unused_parameters=True,
+            find_unused_parameters=False,
+            bucket_cap_mb=50,
         )
         assert result is mock_ddp_cls.return_value
 
@@ -215,4 +241,20 @@ class TestWrapModelDDP:
             model,
             device_ids=[3],
             find_unused_parameters=False,
+            bucket_cap_mb=50,
+        )
+
+    @patch("cc_g2pnp.training.distributed.DistributedDataParallel")
+    def test_wrap_model_ddp_bucket_cap_mb(self, mock_ddp_cls):
+        """bucket_cap_mb パラメータが正しく設定されること。"""
+        model = MagicMock(spec=torch.nn.Module)
+        mock_ddp_cls.return_value = MagicMock()
+
+        wrap_model_ddp(model, device_id=0)
+
+        mock_ddp_cls.assert_called_once_with(
+            model,
+            device_ids=[0],
+            find_unused_parameters=False,
+            bucket_cap_mb=50,
         )

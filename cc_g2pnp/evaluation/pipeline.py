@@ -83,9 +83,18 @@ class EvaluationPipeline:
     ) -> list[list[str]]:
         """Run model inference on a batch of samples.
 
-        Pads BPE IDs to max length, runs model.inference(), decodes results.
+        Sorts samples by BPE ID length to minimize padding waste,
+        runs inference with optional FP16 autocast, then restores
+        original order.
         """
-        bpe_ids_list = [s.bpe_ids for s in samples]
+        # Sort by length for efficient padding
+        indexed_samples = sorted(
+            enumerate(samples), key=lambda x: len(x[1].bpe_ids),
+        )
+        original_indices = [i for i, _ in indexed_samples]
+        sorted_samples = [s for _, s in indexed_samples]
+
+        bpe_ids_list = [s.bpe_ids for s in sorted_samples]
         max_len = max(len(ids) for ids in bpe_ids_list)
 
         # Pad sequences
@@ -98,11 +107,23 @@ class EvaluationPipeline:
         input_ids = torch.tensor(padded, dtype=torch.long, device=self._device)
         input_lengths = torch.tensor(lengths, dtype=torch.long, device=self._device)
 
-        # Run inference
-        with torch.inference_mode():
+        # Run inference with optional FP16 autocast
+        use_amp = self._device.type == "cuda"
+        with torch.inference_mode(), torch.amp.autocast(
+            device_type=self._device.type,
+            dtype=torch.float16,
+            enabled=use_amp,
+        ):
             predicted_ids = self.model.inference(input_ids, input_lengths)
 
-        return self._decode_ids_to_tokens(predicted_ids)
+        sorted_results = self._decode_ids_to_tokens(predicted_ids)
+
+        # Restore original order
+        results = [None] * len(samples)
+        for sorted_idx, orig_idx in enumerate(original_indices):
+            results[orig_idx] = sorted_results[sorted_idx]
+
+        return results
 
     def _run_streaming_inference(
         self,
