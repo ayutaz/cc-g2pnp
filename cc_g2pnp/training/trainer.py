@@ -7,6 +7,7 @@ import logging
 import queue
 import random
 import threading
+import time
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _VAL_NUM_SAMPLES_KEY = frozenset({"val_num_samples"})
+_MAX_DATA_RETRIES = 10
 
 
 def _worker_init_fn(worker_id: int) -> None:
@@ -223,16 +225,35 @@ class Trainer:
             for step in range(start_step, effective_steps):
                 self.global_step = step
 
-                # バッチ取得 (StopIteration でエポック再開)
-                try:
-                    batch = next(data_iter)
-                except StopIteration:
-                    logger.info("Epoch ended at step %d, restarting data iterator", step)
-                    self._epoch += 1
-                    if hasattr(data_iter, "close"):
-                        data_iter.close()
-                    data_iter = self._create_data_iterator()
-                    batch = next(data_iter)
+                # バッチ取得 (StopIteration でエポック再開, ネットワークエラーでリトライ)
+                batch = None
+                for _retry in range(_MAX_DATA_RETRIES):
+                    try:
+                        batch = next(data_iter)
+                        break
+                    except StopIteration:
+                        logger.info("Epoch ended at step %d, restarting data iterator", step)
+                        self._epoch += 1
+                        if hasattr(data_iter, "close"):
+                            data_iter.close()
+                        data_iter = self._create_data_iterator()
+                        batch = next(data_iter)
+                        break
+                    except (ConnectionError, OSError, TimeoutError) as exc:
+                        wait = min(2 ** _retry * 10, 300)
+                        logger.warning(
+                            "Network error at step %d (retry %d/%d): %s. "
+                            "Retrying in %ds...",
+                            step, _retry + 1, _MAX_DATA_RETRIES, exc, wait,
+                        )
+                        if hasattr(data_iter, "close"):
+                            data_iter.close()
+                        time.sleep(wait)
+                        data_iter = self._create_data_iterator()
+                if batch is None:
+                    raise RuntimeError(
+                        f"Failed to fetch batch after {_MAX_DATA_RETRIES} retries at step {step}"
+                    )
 
                 # Train step
                 step_metrics = self.train_step(batch)
