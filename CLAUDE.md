@@ -11,7 +11,7 @@ CC-G2PnP: ストリーミング対応 Conformer-CTC ベースの日本語 G2PnP 
 
 ```bash
 uv sync                              # 依存インストール
-uv run pytest                         # テスト実行 (465 件)
+uv run pytest                         # テスト実行 (490 件)
 uv run pytest tests/test_xxx.py       # 単一ファイルテスト
 uv run pytest tests/test_xxx.py -k "test_name"  # 単一テスト
 uv run ruff check                     # lint
@@ -36,7 +36,7 @@ uv run ruff check --fix               # lint 自動修正
 
 - pytest markers: `slow`, `network`
 - `uv run pytest -m "not slow and not network"` でネットワーク不要テストのみ実行
-- 465 テスト (Phase 1-5)
+- 490 テスト (Phase 1-5)
 
 ## アーキテクチャ
 

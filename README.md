@@ -109,6 +109,24 @@ torchrun --nproc_per_node=N -m cc_g2pnp.cli --ddp
 | `--amp-dtype` | `bfloat16` | AMP データ型 (`float16` / `bfloat16`) |
 | `--ddp` | - | DDP 分散学習を有効化 |
 | `--seed` | `42` | ランダムシード |
+| `--max-input-len` | `512` | サンプルあたり最大 BPE トークン長 (T4: `128` 推奨) |
+| `--num-workers` | `4` | DataLoader ワーカー数 |
+
+### T4 GPU での学習
+
+T4 (15GB, compute capability 7.5) は bfloat16 テンソルコアを持たないため、`float16` AMP を使用してください。
+デフォルトの `--max-tokens 8192` では OOM になるため、以下の設定を推奨します:
+
+```bash
+torchrun --nproc_per_node=4 scripts/train.py --ddp \
+    --amp-dtype float16 \
+    --max-tokens 4096 --max-input-len 128
+```
+
+### ネットワーク耐性
+
+ReazonSpeech ストリーミング中の接続エラー (`ConnectionError`, `OSError`, `TimeoutError`) に対して、
+エクスポネンシャルバックオフ付きの自動リトライ (最大 10 回、10s〜300s) が組み込まれています。
 
 ## 推論
 
@@ -154,7 +172,7 @@ print(pipeline.format_results(result))
 ## テスト
 
 ```bash
-# 全テスト実行 (470 件)
+# 全テスト実行 (490 件)
 uv run pytest
 
 # lint チェック
