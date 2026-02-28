@@ -278,3 +278,178 @@ def test_attention_parameter_count():
     # Total: 4224 + 1024 + 64 = 5312
     total_params = sum(p.numel() for p in attn.parameters())
     assert total_params == 5312
+
+
+# ── SDPA (FlashAttention) path ───────────────────────────────────
+
+
+def _make_sdpa_config(**overrides: object) -> CC_G2PnPConfig:
+    """Create a small config with use_flash_attention=True for testing."""
+    defaults: dict = {"d_model": 32, "num_heads": 4, "dropout": 0.0, "use_flash_attention": True}
+    defaults.update(overrides)
+    return CC_G2PnPConfig(**defaults)
+
+
+def test_sdpa_output_shape():
+    """SDPA path: output shape should be [B, T, D]."""
+    torch.manual_seed(42)
+    config = _make_sdpa_config()
+    attn = ChunkAwareAttention(config)
+    attn.eval()
+    x = torch.randn(2, 10, 32)
+    pos_enc = torch.randn(1, 10, 32)
+    out = attn(x, pos_enc)
+    assert out.shape == (2, 10, 32)
+
+
+def test_sdpa_without_mask():
+    """SDPA path works without a mask (full self-attention)."""
+    torch.manual_seed(42)
+    config = _make_sdpa_config()
+    attn = ChunkAwareAttention(config)
+    attn.eval()
+    x = torch.randn(1, 6, 32)
+    pos_enc = torch.randn(1, 6, 32)
+    out = attn(x, pos_enc)
+    assert out.shape == (1, 6, 32)
+    assert torch.isfinite(out).all()
+
+
+def test_sdpa_with_mask():
+    """SDPA path works correctly with a chunk mask applied."""
+    torch.manual_seed(42)
+    config = _make_sdpa_config()
+    attn = ChunkAwareAttention(config)
+    attn.eval()
+    x = torch.randn(2, 9, 32)
+    pos_enc = torch.randn(1, 9, 32)
+    mask = create_chunk_mask(seq_len=9, chunk_size=3, past_context=2)
+    out = attn(x, pos_enc, mask=mask)
+    assert out.shape == (2, 9, 32)
+    assert torch.isfinite(out).all()
+
+
+def test_sdpa_different_batch_sizes():
+    """SDPA path works with different batch sizes."""
+    torch.manual_seed(42)
+    config = _make_sdpa_config()
+    attn = ChunkAwareAttention(config)
+    attn.eval()
+    for batch_size in [1, 2, 4, 8]:
+        x = torch.randn(batch_size, 6, 32)
+        pos_enc = torch.randn(1, 6, 32)
+        out = attn(x, pos_enc)
+        assert out.shape == (batch_size, 6, 32)
+
+
+def test_sdpa_numerical_equivalence():
+    """SDPA and manual paths produce numerically equivalent results (no mask)."""
+    torch.manual_seed(0)
+    config_manual = _make_config()
+    config_sdpa = _make_sdpa_config()
+
+    manual_attn = ChunkAwareAttention(config_manual)
+    sdpa_attn = ChunkAwareAttention(config_sdpa)
+    # Share the same weights
+    sdpa_attn.load_state_dict(manual_attn.state_dict())
+
+    manual_attn.eval()
+    sdpa_attn.eval()
+
+    x = torch.randn(2, 8, 32)
+    pos_enc = torch.randn(1, 8, 32)
+
+    with torch.no_grad():
+        manual_out = manual_attn(x, pos_enc)
+        sdpa_out = sdpa_attn(x, pos_enc)
+
+    assert torch.allclose(manual_out, sdpa_out, atol=1e-5), (
+        f"Max diff: {(manual_out - sdpa_out).abs().max().item()}"
+    )
+
+
+def test_sdpa_numerical_equivalence_with_mask():
+    """SDPA and manual paths produce numerically equivalent results with chunk mask."""
+    torch.manual_seed(1)
+    config_manual = _make_config()
+    config_sdpa = _make_sdpa_config()
+
+    manual_attn = ChunkAwareAttention(config_manual)
+    sdpa_attn = ChunkAwareAttention(config_sdpa)
+    sdpa_attn.load_state_dict(manual_attn.state_dict())
+
+    manual_attn.eval()
+    sdpa_attn.eval()
+
+    x = torch.randn(2, 9, 32)
+    pos_enc = torch.randn(1, 9, 32)
+    mask = create_chunk_mask(seq_len=9, chunk_size=3, past_context=2)
+
+    with torch.no_grad():
+        manual_out = manual_attn(x, pos_enc, mask=mask)
+        sdpa_out = sdpa_attn(x, pos_enc, mask=mask)
+
+    assert torch.allclose(manual_out, sdpa_out, atol=1e-5), (
+        f"Max diff: {(manual_out - sdpa_out).abs().max().item()}"
+    )
+
+
+def test_sdpa_config_flag_dispatch():
+    """use_flash_attention=False routes to _forward_manual; True routes to _forward_sdpa."""
+    torch.manual_seed(2)
+
+    manual_attn = ChunkAwareAttention(_make_config())
+    sdpa_attn = ChunkAwareAttention(_make_sdpa_config())
+
+    assert manual_attn.use_flash_attention is False
+    assert sdpa_attn.use_flash_attention is True
+
+    manual_attn.eval()
+    sdpa_attn.eval()
+    sdpa_attn.load_state_dict(manual_attn.state_dict())
+
+    x = torch.randn(1, 4, 32)
+    pos_enc = torch.randn(1, 4, 32)
+
+    with torch.no_grad():
+        out_manual = manual_attn._forward_manual(x, pos_enc)
+        out_sdpa = sdpa_attn._forward_sdpa(x, pos_enc)
+        # forward() should dispatch to respective paths
+        out_dispatch_manual = manual_attn(x, pos_enc)
+        out_dispatch_sdpa = sdpa_attn(x, pos_enc)
+
+    assert torch.allclose(out_dispatch_manual, out_manual, atol=1e-6)
+    assert torch.allclose(out_dispatch_sdpa, out_sdpa, atol=1e-6)
+
+
+def test_sdpa_streaming_unaffected():
+    """forward_streaming() works the same regardless of use_flash_attention flag."""
+    torch.manual_seed(3)
+
+    manual_attn = ChunkAwareAttention(_make_config())
+    sdpa_attn = ChunkAwareAttention(_make_sdpa_config())
+    sdpa_attn.load_state_dict(manual_attn.state_dict())
+
+    manual_attn.eval()
+    sdpa_attn.eval()
+
+    b, c, d = 1, 5, 32
+    cache_len = 3
+    x = torch.randn(b, c, d)
+    pos_enc = torch.randn(1, cache_len + c, d)
+    k_cache = torch.randn(b, 4, cache_len, d // 4)
+    v_cache = torch.randn(b, 4, cache_len, d // 4)
+
+    with torch.no_grad():
+        out_manual, _ = manual_attn.forward_streaming(x, pos_enc, (k_cache, v_cache), past_context=10)
+        out_sdpa, _ = sdpa_attn.forward_streaming(x, pos_enc, (k_cache, v_cache), past_context=10)
+
+    assert out_manual.shape == out_sdpa.shape == (b, c, d)
+    # Both paths use the same manual streaming logic
+    assert torch.allclose(out_manual, out_sdpa, atol=1e-6)
+
+
+def test_sdpa_flag_default_false():
+    """CC_G2PnPConfig() のデフォルトで use_flash_attention が False であること。"""
+    config = CC_G2PnPConfig()
+    assert config.use_flash_attention is False

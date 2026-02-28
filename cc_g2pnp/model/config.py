@@ -68,6 +68,12 @@ class CC_G2PnPConfig:
     """Weight for each intermediate CTC loss term.
     Total loss = final_CTC + weight * sum(intermediate_CTC_losses)."""
 
+    # ── Attention backend ───────────────────────────────────────
+    use_flash_attention: bool = False
+    """Use F.scaled_dot_product_attention instead of manual matmul+softmax.
+    Enables EFFICIENT_ATTENTION kernel on T4 (sm75+) for ~10-20% speedup.
+    Checkpoint-compatible (no weight shape changes)."""
+
     # ── Regularization ──────────────────────────────────────────
     dropout: float = 0.1
     """Dropout rate (estimated: common default)."""

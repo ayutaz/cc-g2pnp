@@ -259,11 +259,11 @@ FA 未導入の現状で T4 (15 GB) で安定動作する推奨設定:
 
 > **実装状態メモ (2026-02-28 時点)**
 >
-> - **Phase 1 は未実装** — `attention.py` は手動 `torch.matmul + F.softmax` のまま、`config.py` に `use_flash_attention` フラグなし
-> - **別施策の Phase 0/1 最適化は完了済み** — fused AdamW・勾配 clip・ログ間隔などの低コスト最適化 (10 ファイル, 10 エージェント並列) は FlashAttention 導入とは独立した施策として実施済み。FlashAttention 導入 (本ドキュメントの Phase 1-4) は未着手
-> - **Phase 1 が次の実装対象** (推奨優先度 P0)
+> - **Phase 1 実装済み** — `config.py` に `use_flash_attention: bool = False` フラグを追加し、`attention.py` に `_forward_sdpa()` を実装。`forward()` がフラグに基づいて SDPA dispatch を行う。チェックポイント互換 (重み形状変更なし)
+> - **別施策の Phase 0/1 最適化は完了済み** — fused AdamW・勾配 clip・ログ間隔などの低コスト最適化 (10 ファイル, 10 エージェント並列) は FlashAttention 導入とは独立した施策として実施済み
+> - **Phase 2 が次の実装対象** (チャンク分割処理による O(T^2) → O(T × C) メモリ削減)
 
-### Phase 1: SDPA 基本対応 (工数: 小, 1-2 日) — **【未実装 · 次の実装対象】**
+### Phase 1: SDPA 基本対応 (工数: 小, 1-2 日) — **✅ 実装済み**
 
 **目的**: `F.scaled_dot_product_attention` に切り替えてカーネル fusion の恩恵を得る
 
@@ -373,7 +373,7 @@ def forward(self, x, pos_enc, mask=None):
 
 | 優先度 | アクション | 効果 | 工数 | 再訓練 |
 |--------|----------|------|------|--------|
-| **P0** | Phase 1: SDPA 基本対応 | ~10-20% 速度改善 | 1-2 日 | 不要 |
+| **P0** | ✅ Phase 1: SDPA 基本対応 | ~10-20% 速度改善 | 1-2 日 | 不要 |
 | **P1** | Phase 2: チャンク分割 | ~34x Attention メモリ削減 | 2-3 日 | 不要 |
 | **P2** | Phase 3: RoPE 移行 | FA フル互換 + O(T) メモリ | 3-5 日 | **必要** |
 | **P3** | Phase 4: FlexAttention | 再訓練不要で最高効率 | 1-2 日 | 不要 |

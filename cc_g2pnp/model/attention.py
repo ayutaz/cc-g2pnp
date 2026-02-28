@@ -97,6 +97,7 @@ class ChunkAwareAttention(nn.Module):
         d_model = config.d_model
         self.num_heads = config.num_heads
         self.d_k = d_model // config.num_heads
+        self.use_flash_attention = config.use_flash_attention
 
         self.norm = nn.LayerNorm(d_model)
         self.w_q = nn.Linear(d_model, d_model)
@@ -119,6 +120,9 @@ class ChunkAwareAttention(nn.Module):
     ) -> torch.Tensor:
         """Compute chunk-aware multi-head self-attention.
 
+        Dispatches to ``_forward_sdpa`` (F.scaled_dot_product_attention) when
+        ``use_flash_attention=True``, otherwise falls back to ``_forward_manual``.
+
         Args:
             x: Input tensor ``[B, T, D]``.
             pos_enc: Positional encoding ``[1, T, D]``.
@@ -127,6 +131,17 @@ class ChunkAwareAttention(nn.Module):
         Returns:
             Output tensor ``[B, T, D]``.
         """
+        if self.use_flash_attention:
+            return self._forward_sdpa(x, pos_enc, mask)
+        return self._forward_manual(x, pos_enc, mask)
+
+    def _forward_manual(
+        self,
+        x: torch.Tensor,
+        pos_enc: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Manual matmul+softmax attention (original implementation)."""
         x = self.norm(x)
         b, t, _ = x.shape
 
@@ -155,6 +170,47 @@ class ChunkAwareAttention(nn.Module):
 
         # Weighted sum → [B, H, T, d_k] → [B, T, D]
         out = torch.matmul(attn, v)
+        out = out.transpose(1, 2).contiguous().view(b, t, -1)
+        return self.dropout(self.w_out(out))
+
+    def _forward_sdpa(
+        self,
+        x: torch.Tensor,
+        pos_enc: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """F.scaled_dot_product_attention path (FlashAttention / EFFICIENT_ATTENTION kernel).
+
+        Numerically equivalent to ``_forward_manual``:
+        - pos_bias is pre-scaled by 1/sqrt(d_k) and passed as attn_mask
+        - SDPA internally scales Q@K^T by 1/sqrt(d_k)
+        - Result: softmax(Q@K^T/sqrt(d_k) + pos_bias + chunk_mask) @ V
+        """
+        x = self.norm(x)
+        b, t, _ = x.shape
+
+        # Project Q, K, V → [B, H, T, d_k]
+        q = self.w_q(x).view(b, t, self.num_heads, self.d_k).transpose(1, 2)
+        k = self.w_k(x).view(b, t, self.num_heads, self.d_k).transpose(1, 2)
+        v = self.w_v(x).view(b, t, self.num_heads, self.d_k).transpose(1, 2)
+
+        # Relative positional bias (pre-scaled by 1/sqrt(d_k)): [B, H, T, T]
+        pos_k = self.pos_k(pos_enc)  # [1, T, D]
+        pos_k = pos_k.view(1, t, self.num_heads, self.d_k).transpose(1, 2)  # [1, H, T, d_k]
+        pos_bias = torch.matmul(q, pos_k.transpose(-2, -1)) / math.sqrt(self.d_k)
+
+        # Build float attn_mask: pos_bias + -inf where mask=False
+        if mask is not None:
+            inv_mask = ~mask.unsqueeze(0).unsqueeze(0)  # [1, 1, T, T]
+            attn_mask = pos_bias.masked_fill(inv_mask, float("-inf"))
+        else:
+            attn_mask = pos_bias
+
+        # SDPA: softmax(Q@K^T/sqrt(d_k) + attn_mask) @ V
+        dp = self.attn_dropout.p if self.training else 0.0
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=dp)
+
+        # Reshape: [B, H, T, d_k] → [B, T, D]
         out = out.transpose(1, 2).contiguous().view(b, t, -1)
         return self.dropout(self.w_out(out))
 
