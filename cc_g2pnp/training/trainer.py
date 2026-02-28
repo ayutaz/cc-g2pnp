@@ -138,6 +138,8 @@ class Trainer:
 
         # 4. モデル作成 → デバイスに移動
         self.model: nn.Module = CC_G2PnP(model_config).to(self.device)
+        # Gradient checkpointing: 中間活性化をバックプロップ時に再計算してメモリ削減
+        self.model.set_gradient_checkpointing(True)
 
         # 5. DDP ラップ
         if training_config.use_ddp:
@@ -413,6 +415,7 @@ class Trainer:
         dataset = G2PnPDataset(
             subset=config.dataset_subset,
             streaming=True,
+            max_input_len=config.max_input_len,
             shuffle_seed=config.seed + self._epoch,
             rank=self.rank,
             world_size=self.world_size,
@@ -463,6 +466,7 @@ class Trainer:
             dataset = G2PnPDataset(
                 subset=self.training_config.dataset_subset,
                 streaming=True,
+                max_input_len=self.training_config.max_input_len,
             )
             # 最大100サンプルを収集
             samples: list[dict] = []

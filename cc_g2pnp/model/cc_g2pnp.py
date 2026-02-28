@@ -37,6 +37,10 @@ class CC_G2PnP(nn.Module):
             zero_infinity=True,
         )
 
+    def set_gradient_checkpointing(self, enabled: bool = True) -> None:
+        """Enable/disable gradient checkpointing for memory-efficient training."""
+        self.encoder.set_gradient_checkpointing(enabled)
+
     def forward(
         self,
         input_ids: torch.Tensor,

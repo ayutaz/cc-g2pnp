@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import torch
 from torch import nn
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 
 from cc_g2pnp.model.attention import create_chunk_mask, create_mla_mask
 from cc_g2pnp.model.conformer_block import ConformerBlock
@@ -48,6 +49,7 @@ class ConformerEncoder(nn.Module):
     def __init__(self, config: CC_G2PnPConfig) -> None:
         super().__init__()
         self.config = config
+        self._gradient_checkpointing = False
 
         self.pos_enc = RelativePositionalEncoding(config)
         self.layers = nn.ModuleList(
@@ -60,6 +62,10 @@ class ConformerEncoder(nn.Module):
         self.ctc_to_hidden = nn.Linear(config.pnp_vocab_size, config.d_model)
 
         self._intermediate_ctc_layers = set(config.intermediate_ctc_layers)
+
+    def set_gradient_checkpointing(self, enabled: bool = True) -> None:
+        """Enable/disable gradient checkpointing for memory-efficient training."""
+        self._gradient_checkpointing = enabled
 
     def forward(
         self,
@@ -93,7 +99,10 @@ class ConformerEncoder(nn.Module):
 
         for i, layer in enumerate(self.layers):
             mask = mla_mask if i == 0 else chunk_mask
-            x = layer(x, pos_enc, mask)
+            if self.training and self._gradient_checkpointing:
+                x = grad_checkpoint(layer, x, pos_enc, mask, use_reentrant=False)
+            else:
+                x = layer(x, pos_enc, mask)
 
             if i in self._intermediate_ctc_layers:
                 inter_logits = self.ctc_projection(x)
