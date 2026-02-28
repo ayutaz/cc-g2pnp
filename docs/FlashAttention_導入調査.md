@@ -353,18 +353,20 @@ EFFICIENT_ATTENTION は内部で softmax を FP32 にアップキャストする
 # config.py フラグで即時切り替え
 use_flash_attention: bool = False  # デフォルト off
 
-# attention.py
+# attention.py (Phase 2 実装後の実際のディスパッチ)
 def forward(self, x, pos_enc, mask=None):
-    if self.config.use_flash_attention:
-        return self._forward_sdpa(x, pos_enc, mask)
+    if self.use_flash_attention:
+        return self._forward_chunk_sdpa(x, pos_enc, mask)  # Phase 2: チャンク分割 SDPA
     return self._forward_manual(x, pos_enc, mask)  # 旧実装保持
 ```
+
+> **注**: Phase 1 では `_forward_sdpa()` が追加されたが、Phase 2 完了後は `forward()` のディスパッチ先が `_forward_chunk_sdpa()` に更新された。`_forward_sdpa()` は参照実装として保持されている。
 
 ### 11.4 テスト影響
 
 | テストファイル | テスト数 | Phase 1-2 影響 | Phase 3 影響 |
 |-------------|---------|--------------|------------|
-| test_attention.py | 17 | 低 (形状不変) | 高 (パラメータ数変更) |
+| test_attention.py | 30 | 低 (形状不変) | 高 (パラメータ数変更) |
 | test_conformer_block.py | 9 | 低 | 中 |
 | test_encoder.py | 12 | 低 | 中 |
 | test_inference_streaming.py | 32 | 中 | 高 |

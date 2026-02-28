@@ -67,7 +67,10 @@ cc_g2pnp/
 │   └── pipeline.py         #   EvaluationPipeline
 └── utils/
 scripts/
-└── preprocess_pnp.py       # PnP ラベル事前キャッシュ生成スクリプト
+├── train.py                # 学習スクリプト (cli.py のエイリアス)
+├── evaluate.py             # 評価スクリプト
+├── preprocess_pnp.py       # PnP ラベル事前キャッシュ生成スクリプト
+└── verify_ddp.py           # DDP 設定検証スクリプト
 ```
 
 ## セットアップ
@@ -190,7 +193,7 @@ print(pipeline.format_results(result))
 ## テスト
 
 ```bash
-# 全テスト実行 (516 件)
+# 全テスト実行 (529 件)
 uv run pytest
 
 # lint チェック
