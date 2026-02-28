@@ -11,6 +11,11 @@
 - **ストリーミング推論** — チャンク単位の逐次処理で低遅延な音素・韻律予測
 - **DDP マルチ GPU 学習** — `torchrun` によるデータ並列分散学習
 - **AMP (float16 / bfloat16)** — 混合精度学習によるメモリ効率化
+- **Fused AdamW** — CUDA 利用時に fused カーネルで optimizer ステップを高速化
+- **バックグラウンドプリフェッチ** — 専用スレッドによるバッチ先読みでデータ転送を並列化
+- **マルチプロセス音素解析** — DataLoader ワーカーごとに独立した OpenJTalk インスタンスで真の並列化
+- **FP16 推論** — 評価パイプラインで CUDA autocast による高速推論
+- **長さソートバッチング** — 評価時にパディング量を削減するシーケンス長ソート
 - **W&B ロギング** — 学習メトリクスの自動記録・可視化
 - **6 種メトリクス評価** — PnP CER/SER、Normalized PnP CER/SER、Phoneme CER/SER
 
@@ -20,6 +25,7 @@
 cc_g2pnp/
 ├── __init__.py
 ├── cli.py                  # 学習 CLI エントリポイント
+├── _patch_pyopenjtalk.py   # pyopenjtalk 互換パッチ
 ├── data/                   # データパイプライン
 │   ├── vocabulary.py       #   PnP 語彙 (140 トークン)
 │   ├── pnp_labeler.py      #   pyopenjtalk による音素・韻律ラベル生成
@@ -111,6 +117,7 @@ torchrun --nproc_per_node=N -m cc_g2pnp.cli --ddp
 | `--seed` | `42` | ランダムシード |
 | `--max-input-len` | `512` | サンプルあたり最大 BPE トークン長 (T4: `128` 推奨) |
 | `--num-workers` | `4` | DataLoader ワーカー数 |
+| `--prefetch-count` | `4` | バックグラウンドでプリフェッチするバッチ数 |
 
 ### T4 GPU での学習
 
@@ -184,3 +191,6 @@ uv run ruff check
 - [CC-G2PnP 論文まとめ](docs/CC-G2PnP_論文まとめ.md)
 - [技術調査](docs/CC-G2PnP_技術調査.md)
 - [実装ロードマップ](docs/CC-G2PnP_実装ロードマップ.md)
+- [論文再現性調査](docs/CC-G2PnP_論文再現性調査.md)
+- [FlashAttention 導入調査](docs/FlashAttention_導入調査.md)
+- [最適化調査レポート](docs/最適化調査レポート.md)

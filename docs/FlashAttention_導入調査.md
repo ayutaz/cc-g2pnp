@@ -189,6 +189,18 @@ output = flex_attention(q, k, v, score_mod=score_mod, block_mask=block_mask)
 
 `pos_K` は `1×H×T×d_k = 4 MB` と小さく SRAM 保持可能。Backward でも Q (FA 内再計算) + pos_K から pos_bias 勾配を再現でき、`B×H×T×T` の pos_bias 保存は不要。
 
+### 6.4 T4 推奨設定 (現時点の安定構成)
+
+FA 未導入の現状で T4 (15 GB) で安定動作する推奨設定:
+
+| パラメータ | 推奨値 | 備考 |
+|-----------|--------|------|
+| `--amp-dtype` | `float16` | BF16 は T4 (sm75) でネイティブ非対応 |
+| `--max-tokens` | `4096` | 動的バッチの最大トークン数 |
+| `--max-input-len` | `128` | T=1,024 フレーム → Attention ~3.0 GB (T4 で余裕) |
+
+> **注**: `--max-input-len=256` 以上は FA 未導入では VRAM 不足になる可能性があります (Section 2.2 参照)。Phase 1+2 実装後に `--max-input-len=512` が実現可能になります。
+
 ---
 
 ## 7. PyTorch SDPA vs xformers の比較
@@ -245,7 +257,13 @@ output = flex_attention(q, k, v, score_mod=score_mod, block_mask=block_mask)
 
 ## 10. 段階的移行計画
 
-### Phase 1: SDPA 基本対応 (工数: 小, 1-2 日)
+> **実装状態メモ (2026-02-28 時点)**
+>
+> - **Phase 1 は未実装** — `attention.py` は手動 `torch.matmul + F.softmax` のまま、`config.py` に `use_flash_attention` フラグなし
+> - **別施策の Phase 0/1 最適化は完了済み** — fused AdamW・勾配 clip・ログ間隔などの低コスト最適化 (10 ファイル, 10 エージェント並列) は FlashAttention 導入とは独立した施策として実施済み。FlashAttention 導入 (本ドキュメントの Phase 1-4) は未着手
+> - **Phase 1 が次の実装対象** (推奨優先度 P0)
+
+### Phase 1: SDPA 基本対応 (工数: 小, 1-2 日) — **【未実装 · 次の実装対象】**
 
 **目的**: `F.scaled_dot_product_attention` に切り替えてカーネル fusion の恩恵を得る
 

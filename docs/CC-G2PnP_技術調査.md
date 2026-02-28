@@ -439,11 +439,12 @@ CC-G2PnP論文のPnP系列生成の参考実装として有用。
 - ESPnetからSelf-conditioned CTCの実装を参考 → `ConformerEncoder` に中間CTC+フィードバック実装
 - ESPnet Issue #4031を参考にDDP設定 → `find_unused_parameters=True`
 - SpeechBrainからDynamic Chunk Trainingのパターンを参考
-- 学習パイプライン: Trainer + TrainingConfig + AdamW (decay/no_decay) + ExponentialLR + CheckpointManager + DDP + AMP + W&B (必須)
-- ストリーミング推論: Conv cache + KV cache + MLA look-ahead
+- 学習パイプライン: Trainer + TrainingConfig + AdamW (decay/no_decay, **fused AdamW対応 Phase 1最適化**) + ExponentialLR + CheckpointManager + DDP (**find_unused_parameters=True, static_graph最適化**) + AMP + W&B (必須)
+- ストリーミング推論: Conv cache + KV cache + MLA look-ahead (**torch.inference_mode()使用 Phase 0最適化**)
 - 評価パイプライン: 6メトリクス (`jiwer.wer` ベース) + 4ドメインビルトインデータ + batch/streaming推論
+- データパイプライン: **ネットワークエラーリトライロジック実装済み** (exponential backoff)
 - 外部フレームワークへの依存なし（PyTorch標準のみ）、論文仕様を忠実に再現
-- 458テスト PASS、ruff clean
+- 490テスト PASS、ruff clean
 
 ---
 
@@ -484,7 +485,7 @@ CC-G2PnP論文のPnP系列生成の参考実装として有用。
 
 ### 5.4 論文コードの公開状況
 
-- **CC-G2PnPのコードは未公開**（2026年2月時点、提出直後のため）→ **本リポジトリで再現実装中** (Phase 5完了: モデルコア84M params + 学習パイプライン + ストリーミング推論 + 評価パイプライン、458テスト PASS)
+- **CC-G2PnPのコードは未公開**（2026年2月時点、提出直後のため）→ **本リポジトリで再現実装中** (Phase 5完了: モデルコア84M params + 学習パイプライン + ストリーミング推論 + 評価パイプライン、490テスト PASS)
 - **Dict-DNN韻律予測モデルも未公開**（Park et al., Interspeech 2022）→ pyopenjtalk full-context label解析で代替実装済み
 - **6D-Eval評価データセットも未公開**
 - 今後r9y9のGitHubリポジトリで公開される可能性あり

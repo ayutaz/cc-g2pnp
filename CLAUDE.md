@@ -31,6 +31,7 @@ uv run ruff check --fix               # lint 自動修正
 - `datasets>=2.14.0,<4.0.0` にピン留め (v4.0+ で breaking change)
 - `uv run python -m unidic download` で UniDic 辞書のダウンロードが必要
 - W&B (wandb) は必須 — 未ログイン時に RuntimeError
+- データパイプラインはネットワークエラー時に指数バックオフで自動リトライ (最大 5 回)
 
 ## テスト
 
@@ -44,9 +45,9 @@ uv run ruff check --fix               # lint 自動修正
 
 1. **data** — 語彙 (140 トークン), PnP ラベラー, CALM2 トークナイザ, ReazonSpeech データセット, collator
 2. **model** — CC_G2PnP (Conformer encoder + CTC head), 84M params
-3. **training** — Trainer, CheckpointManager, DDP, AMP (fused AdamW), W&B logger
+3. **training** — Trainer, CheckpointManager, DDP (勾配同期最適化), AMP (fused AdamW), W&B logger; データ取得ネットワークエラー自動リトライ付き
 4. **inference** — StreamingInference (Conv cache + KV cache), レイテンシ計測
-5. **evaluation** — 6 種メトリクス (PnP CER/SER, Normalized, Phoneme), EvaluationPipeline
+5. **evaluation** — 6 種メトリクス (PnP CER/SER, Normalized, Phoneme), EvaluationPipeline (FP16 autocast + 長さソートバッチング)
 
 ## エージェントチーム
 

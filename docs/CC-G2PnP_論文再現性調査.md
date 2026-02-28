@@ -71,6 +71,15 @@
 | Batch tokens | 30K (推定) | 1024 | 実効バッチサイズ小 |
 | Gradient checkpointing | なし (推定) | あり | メモリ節約のための追加 |
 
+### 実装最適化の注記 (Phase 0/1)
+
+Phase 0/1 最適化で以下の変更が加えられたが、**再現性に影響しない**:
+
+- **Fused AdamW**: `torch.optim.AdamW(fused=True)` を採用。数値的に通常の AdamW と同等であり、速度向上のみ。
+- **DDP 通信最適化**: `gradient_as_bucket_view=True` 等の通信効率化。訓練結果には影響なし。
+
+上記の表では引き続き「AdamW ✓」として一致判定とする。
+
 ### 乖離の理由
 
 T4 GPU (15GB VRAM) のメモリ制約:
