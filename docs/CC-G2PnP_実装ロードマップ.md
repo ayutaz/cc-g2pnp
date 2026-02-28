@@ -43,7 +43,8 @@ cc_g2pnp/
 │   ├── pnp_labeler.py     # PnPラベル生成 (HTS→カタカナ+韻律)
 │   ├── tokenizer.py       # CALM2 BPEトークナイザラッパー
 │   ├── dataset.py         # ReazonSpeech streaming IterableDataset
-│   └── collator.py        # Dynamic Batching + パディング
+│   ├── collator.py        # Dynamic Batching + パディング
+│   └── lmdb_cache.py      # PnP ラベル LMDB キャッシュ
 ├── model/             # モデル定義 (Phase 2 ✅)
 │   ├── __init__.py          # 15 public exports
 │   ├── config.py            # CC_G2PnPConfig dataclass
@@ -76,7 +77,8 @@ cc_g2pnp/
 │   └── pipeline.py        # EvaluationPipeline (batch/streaming推論 → メトリクス計算)
 └── utils/
 scripts/
-└── train.py               # argparse CLIエントリポイント (Phase 3 ✅)
+├── train.py               # argparse CLIエントリポイント (Phase 3 ✅)
+└── preprocess_pnp.py      # PnP ラベル LMDB キャッシュ生成スクリプト (Phase 2-opt ✅)
 tests/
 ├── test_g2p.py            # pyopenjtalk/fugashi基本テスト (5件)
 ├── test_tokenizer.py      # CALM2トークナイザテスト (6件)
@@ -574,17 +576,20 @@ Phase 5: 評価                       ████████ ✅ 完了
 Phase 6: アブレーション              ░░░░░░░░░░░░░░░░░░░░░░██ ← 次
 Phase 0-opt: ゼロコスト最適化          ████████ ✅ 完了 (7施策)
 Phase 1-opt: 低コスト最適化           ████████ ✅ 完了 (7施策)
-Phase 2-opt: 中コスト改善             ░░░░░░░░░░░░░░░░░░░░░░   ← 次
+Phase 2-opt: 中コスト改善             ████████ ✅ 完了 (5施策)
 FlashAttention Phase 1 (SDPA)        ████████ ✅ 完了
+FlashAttention Phase 2 (チャンク分割) ████████ ✅ 完了
 ```
 
-- **Phase 0-5 全完了**（評価パイプラインまで実装済み、499テスト PASS）
+- **Phase 0-5 全完了**（評価パイプラインまで実装済み、516 テスト PASS）
 - **最適化 Phase 0-1 完了**: ゼロコスト 7施策 + 低コスト 7施策 適用済み (コミット `bce295d`, `d37a34b`)
+- **最適化 Phase 2 完了**: LMDB キャッシュ・中間 CTC バッチ化・GroupNorm・非同期チェックポイント・torch.compile (推論) 実装済み
 - **DDP バグ修正完了**: チェックポイント保存 barrier 欠如・データシャーディング未実装を修正 (コミット `4c29ee2`, `7bc3d8f`)
 - **ネットワークリトライロジック追加**: データパイプラインにネットワークエラー自動リトライを実装 (コミット `fdc645d`)
 - Phase 6 はPhase 5の評価基盤が前提 → **評価基盤整備済み、フルスケール学習後に実行可能**
 - **FlashAttention Phase 1 完了**: SDPA 基本対応 (`use_flash_attention` フラグ, `_forward_sdpa()` 実装, コミット `db12843`)
-- **次のステップ**: Phase 2-opt 中コスト改善 (PnP ラベル LMDB キャッシュ等) / FlashAttention Phase 2 (チャンク分割処理)
+- **FlashAttention Phase 2 完了**: チャンク分割処理 (`_forward_chunk_sdpa()` 実装), O(T^2) → O(T×C) メモリ削減
+- **次のステップ**: Phase 2-opt 高コスト改善 (ONNX/TensorRT) / FlashAttention Phase 3 (RoPE 移行)
 
 ---
 
@@ -617,4 +622,5 @@ FlashAttention Phase 1 (SDPA)        ████████ ✅ 完了
 | **M3: スモーク試験完了** | 3 | 10ステップ実行、損失 23.77→10.81、W&B同期OK | ✅ 達成 |
 | **M4: ストリーミング推論動作** | 4 | チャンク単位の逐次推論でPnPラベル出力。376テスト、streaming/latencyテスト完了 | ✅ 達成 |
 | **M5: 評価パイプライン完成** | 5 | 全6メトリクス計算、4ドメインビルトインデータ、batch/streaming推論→評価。499テスト | ✅ 達成 |
+| **M5-opt: Phase 2 最適化完了** | 6-opt | LMDB キャッシュ・GroupNorm・非同期チェックポイント・torch.compile・チャンク分割 Attention 実装。516 テスト | ✅ 達成 |
 | **M6: フルスケール学習完了** | 3+6 | 100%データ・1.2Mステップでの学習完了、PnP CER ≈ 1.79（代替評価データ上） | |

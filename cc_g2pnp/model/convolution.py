@@ -18,10 +18,17 @@ class ConformerConvModule(nn.Module):
     Architecture::
 
         LayerNorm → Pointwise Conv(D→2D) → GLU → Causal Depthwise Conv
-        → BatchNorm → SiLU → Pointwise Conv(D→D) → Dropout
+        → BatchNorm/GroupNorm → SiLU → Pointwise Conv(D→D) → Dropout
 
     All convolutions use causal (left-only) padding so that the output at
     time *t* depends only on inputs at times ≤ *t*.
+
+    Note:
+        **Checkpoint compatibility**: When ``use_groupnorm=True``, the norm
+        layer is stored as ``self.norm`` (``nn.GroupNorm``).  When
+        ``use_groupnorm=False`` (default), it is also ``self.norm``
+        (``nn.BatchNorm1d``).  Checkpoints trained with one setting are
+        **incompatible** with the other due to different weight shapes.
     """
 
     def __init__(self, config: CC_G2PnPConfig) -> None:
@@ -34,7 +41,13 @@ class ConformerConvModule(nn.Module):
         self.pointwise_conv1 = nn.Conv1d(d, expanded, kernel_size=1)
         self.glu = nn.GLU(dim=1)
         self.depthwise_conv = nn.Conv1d(d, d, kernel_size=k, groups=d, bias=False)
-        self.batch_norm = nn.BatchNorm1d(d)
+        if config.use_groupnorm:
+            # GroupNorm: 32 groups is standard for d_model=512 (16 channels per group)
+            # Works with any batch size, no DDP sync needed, fp16 stable
+            num_groups = min(32, d)
+            self.norm = nn.GroupNorm(num_groups, d)
+        else:
+            self.norm = nn.BatchNorm1d(d)
         self.activation = nn.SiLU(inplace=True)
         self.pointwise_conv2 = nn.Conv1d(d, d, kernel_size=1)
         self.dropout = nn.Dropout(config.dropout)
@@ -66,7 +79,7 @@ class ConformerConvModule(nn.Module):
         x = F.pad(x, (self._causal_padding, 0))
         x = self.depthwise_conv(x)  # [B, D, T]
 
-        x = self.batch_norm(x)
+        x = self.norm(x)
         x = self.activation(x)
         x = self.pointwise_conv2(x)  # [B, D, T]
         x = self.dropout(x)
@@ -80,9 +93,11 @@ class ConformerConvModule(nn.Module):
         """Streaming forward using conv_cache instead of zero padding.
 
         Note:
-            Assumes model is in eval mode (``model.eval()``).  BatchNorm
-            uses running statistics in eval mode; training-mode statistics
-            would be unreliable with small chunk sizes.
+            When using BatchNorm (``use_groupnorm=False``), assumes model is
+            in eval mode (``model.eval()``).  BatchNorm uses running
+            statistics in eval mode; training-mode statistics would be
+            unreliable with small chunk sizes.  GroupNorm (``use_groupnorm=True``)
+            does not have this restriction and works correctly in any mode.
 
         Args:
             x: Current chunk ``[B, C, D]`` where C is chunk_size frames.
@@ -105,7 +120,7 @@ class ConformerConvModule(nn.Module):
         new_cache = x_padded[:, :, -(self._causal_padding):].transpose(1, 2)  # [B, kernel-1, D]
 
         x = self.depthwise_conv(x_padded)  # [B, D, C] — no extra padding needed
-        x = self.batch_norm(x)
+        x = self.norm(x)
         x = self.activation(x)
         x = self.pointwise_conv2(x)  # [B, D, C]
         x = self.dropout(x)

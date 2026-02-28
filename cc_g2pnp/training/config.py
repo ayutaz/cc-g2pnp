@@ -88,6 +88,16 @@ class TrainingConfig:
     prefetch_count: int = 4
     """Number of batches to prefetch in background (0 = no prefetch)."""
 
+    # ── LMDB cache ────────────────────────────────────────────────
+    lmdb_cache_dir: str | None = None
+    """Path to LMDB directory with pre-computed PnP labels.
+    If set, dataset reads labels from cache instead of generating on-the-fly.
+    Build with: uv run python scripts/preprocess_pnp.py --output <path>"""
+
+    # ── Checkpoint ─────────────────────────────────────────────────
+    async_checkpoint: bool = True
+    """Save checkpoints asynchronously in a background thread."""
+
     # ── Misc ──────────────────────────────────────────────────────
     seed: int = 42
     """Random seed for reproducibility."""

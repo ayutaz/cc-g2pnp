@@ -92,6 +92,16 @@ class TestEvalConfig:
         assert cfg.use_streaming is True
         assert cfg.max_samples == 100
 
+    def test_eval_config_compile_default(self):
+        """use_compile のデフォルトは False。"""
+        cfg = EvalConfig()
+        assert cfg.use_compile is False
+
+    def test_compile_flag_accepted(self):
+        """EvalConfig(use_compile=True) はエラーにならない。"""
+        cfg = EvalConfig(use_compile=True)
+        assert cfg.use_compile is True
+
 
 class TestEvalResult:
     def test_defaults(self):
@@ -261,6 +271,14 @@ class TestEvaluationPipeline:
         dataset = EvalDataset(samples=samples, name="test_sorted")
         result = pipeline.evaluate(dataset)
         # エラーなく完了し、全サンプルが処理される
+        assert result.num_samples == 3
+
+    def test_pipeline_without_compile(self, small_model, vocabulary, sample_dataset):
+        """use_compile=False (デフォルト) でパイプラインが正常動作するリグレッションテスト。"""
+        cfg = EvalConfig(batch_size=4, use_compile=False)
+        pipe = EvaluationPipeline(small_model, vocabulary, cfg)
+        result = pipe.evaluate(sample_dataset)
+        assert isinstance(result, EvalResult)
         assert result.num_samples == 3
 
     def test_batch_inference_with_varying_lengths(self, pipeline):

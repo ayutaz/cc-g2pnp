@@ -11,7 +11,7 @@ CC-G2PnP: ストリーミング対応 Conformer-CTC ベースの日本語 G2PnP 
 
 ```bash
 uv sync                              # 依存インストール
-uv run pytest                         # テスト実行 (499 件)
+uv run pytest                         # テスト実行 (516 件)
 uv run pytest tests/test_xxx.py       # 単一ファイルテスト
 uv run pytest tests/test_xxx.py -k "test_name"  # 単一テスト
 uv run ruff check                     # lint
@@ -32,22 +32,23 @@ uv run ruff check --fix               # lint 自動修正
 - `uv run python -m unidic download` で UniDic 辞書のダウンロードが必要
 - W&B (wandb) は必須 — 未ログイン時に RuntimeError
 - データパイプラインはネットワークエラー時に指数バックオフで自動リトライ (最大 10 回)
+- PnP ラベル LMDB キャッシュ: `scripts/preprocess_pnp.py` で事前生成し `--lmdb-cache-dir` で指定すると GPU 利用率が大幅改善
 
 ## テスト
 
 - pytest markers: `slow`, `network`
 - `uv run pytest -m "not slow and not network"` でネットワーク不要テストのみ実行
-- 499 テスト (Phase 1-5 + FlashAttention SDPA)
+- 516 テスト (Phase 1-5 + FlashAttention SDPA + Phase 2-opt)
 
 ## アーキテクチャ
 
 5 モジュール構成:
 
-1. **data** — 語彙 (140 トークン), PnP ラベラー, CALM2 トークナイザ, ReazonSpeech データセット, collator
-2. **model** — CC_G2PnP (Conformer encoder + CTC head), 84M params, SDPA 対応 (`use_flash_attention` フラグ)
-3. **training** — Trainer, CheckpointManager, DDP (勾配同期最適化), AMP (fused AdamW), W&B logger; データ取得ネットワークエラー自動リトライ付き
+1. **data** — 語彙 (140 トークン), PnP ラベラー, CALM2 トークナイザ, ReazonSpeech データセット, collator, LMDB キャッシュ (`lmdb_cache.py`)
+2. **model** — CC_G2PnP (Conformer encoder + CTC head), 84M params, SDPA 対応 (`use_flash_attention` フラグ), チャンク分割 Attention (Phase 2), GroupNorm オプション (`use_groupnorm` フラグ)
+3. **training** — Trainer, CheckpointManager (非同期保存 `async_checkpoint` フラグ), DDP (勾配同期最適化), AMP (fused AdamW), W&B logger; データ取得ネットワークエラー自動リトライ付き
 4. **inference** — StreamingInference (Conv cache + KV cache), レイテンシ計測
-5. **evaluation** — 6 種メトリクス (PnP CER/SER, Normalized, Phoneme), EvaluationPipeline (FP16 autocast + 長さソートバッチング)
+5. **evaluation** — 6 種メトリクス (PnP CER/SER, Normalized, Phoneme), EvaluationPipeline (FP16 autocast + 長さソートバッチング + `torch.compile` オプション `use_compile` フラグ)
 
 ## エージェントチーム
 

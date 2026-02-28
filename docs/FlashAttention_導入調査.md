@@ -260,8 +260,9 @@ FA 未導入の現状で T4 (15 GB) で安定動作する推奨設定:
 > **実装状態メモ (2026-02-28 時点)**
 >
 > - **Phase 1 実装済み** — `config.py` に `use_flash_attention: bool = False` フラグを追加し、`attention.py` に `_forward_sdpa()` を実装。`forward()` がフラグに基づいて SDPA dispatch を行う。チェックポイント互換 (重み形状変更なし)
-> - **別施策の Phase 0/1 最適化は完了済み** — fused AdamW・勾配 clip・ログ間隔などの低コスト最適化 (10 ファイル, 10 エージェント並列) は FlashAttention 導入とは独立した施策として実施済み
-> - **Phase 2 が次の実装対象** (チャンク分割処理による O(T^2) → O(T × C) メモリ削減)
+> - **Phase 2 実装済み** — `attention.py` に `_forward_chunk_sdpa()` を追加。チャンク単位分割処理により O(T^2) → O(T × C) メモリ削減を実現。チェックポイント互換 (重み形状変更なし)
+> - **別施策の Phase 0/1/2 最適化は完了済み** — fused AdamW・勾配 clip・LMDB キャッシュ・GroupNorm 等 (FlashAttention 導入とは独立した施策として実施済み)
+> - **Phase 3 が次の実装対象** (RoPE 移行による FlashAttention フル互換化)
 
 ### Phase 1: SDPA 基本対応 (工数: 小, 1-2 日) — **✅ 実装済み**
 
@@ -286,15 +287,17 @@ out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=dro
 - **期待効果**: EFFICIENT_ATTENTION kernel で ~10-20% 速度改善
 - **チェックポイント互換性**: 完全互換 (重み形状変更なし)
 
-### Phase 2: チャンク分割処理 (工数: 中)
+### Phase 2: チャンク分割処理 (工数: 中) — **✅ 実装済み**
 
 **目的**: O(T^2) → O(T × C) メモリ削減
 
+- `attention.py` に `_forward_chunk_sdpa()` を追加
 - Attention をチャンク単位で分割処理
 - 各チャンク: Q=[B,H,C,d_k], K/V=[B,H,C+P,d_k] → FA `is_causal=False` 適用可能
 - ~34 倍メモリ削減
+- チェックポイント互換 (重み形状変更なし)
 
-### Phase 3: RoPE 移行 (工数: 大, 3-5 日)
+### Phase 3: RoPE 移行 (工数: 大, 3-5 日) ← **次の実装対象**
 
 **目的**: O(T^2) 完全排除、FlashAttention フル互換
 
@@ -374,7 +377,7 @@ def forward(self, x, pos_enc, mask=None):
 | 優先度 | アクション | 効果 | 工数 | 再訓練 |
 |--------|----------|------|------|--------|
 | **P0** | ✅ Phase 1: SDPA 基本対応 | ~10-20% 速度改善 | 1-2 日 | 不要 |
-| **P1** | Phase 2: チャンク分割 | ~34x Attention メモリ削減 | 2-3 日 | 不要 |
+| **P1** | ✅ Phase 2: チャンク分割 | ~34x Attention メモリ削減 | 2-3 日 | 不要 |
 | **P2** | Phase 3: RoPE 移行 | FA フル互換 + O(T) メモリ | 3-5 日 | **必要** |
 | **P3** | Phase 4: FlexAttention | 再訓練不要で最高効率 | 1-2 日 | 不要 |
 

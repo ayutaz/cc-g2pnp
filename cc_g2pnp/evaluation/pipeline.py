@@ -28,6 +28,7 @@ class EvalConfig:
     device: str = "cpu"
     use_streaming: bool = False
     max_samples: int | None = None
+    use_compile: bool = False
 
 
 @dataclass
@@ -59,6 +60,14 @@ class EvaluationPipeline:
         self._device = torch.device(self.config.device)
         self.model.to(self._device)
         self.model.eval()
+
+        # Optional torch.compile for inference speedup (+30-50% on supported backends)
+        if self.config.use_compile:
+            try:
+                self.model = torch.compile(self.model, mode="reduce-overhead")
+                logger.info("Model compiled with torch.compile(mode='reduce-overhead')")
+            except Exception:
+                logger.warning("torch.compile failed, falling back to eager mode", exc_info=True)
 
     def _decode_ids_to_tokens(self, id_sequences: list[list[int]]) -> list[list[str]]:
         """Convert predicted ID sequences to PnP token sequences.

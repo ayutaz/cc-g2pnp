@@ -98,6 +98,9 @@ class ChunkAwareAttention(nn.Module):
         self.num_heads = config.num_heads
         self.d_k = d_model // config.num_heads
         self.use_flash_attention = config.use_flash_attention
+        self.chunk_size = config.chunk_size
+        self.past_context = config.past_context
+        self.mla_size = config.mla_size
 
         self.norm = nn.LayerNorm(d_model)
         self.w_q = nn.Linear(d_model, d_model)
@@ -120,7 +123,7 @@ class ChunkAwareAttention(nn.Module):
     ) -> torch.Tensor:
         """Compute chunk-aware multi-head self-attention.
 
-        Dispatches to ``_forward_sdpa`` (F.scaled_dot_product_attention) when
+        Dispatches to ``_forward_chunk_sdpa`` (chunk-level SDPA, Phase 2) when
         ``use_flash_attention=True``, otherwise falls back to ``_forward_manual``.
 
         Args:
@@ -132,7 +135,7 @@ class ChunkAwareAttention(nn.Module):
             Output tensor ``[B, T, D]``.
         """
         if self.use_flash_attention:
-            return self._forward_sdpa(x, pos_enc, mask)
+            return self._forward_chunk_sdpa(x, pos_enc, mask)
         return self._forward_manual(x, pos_enc, mask)
 
     def _forward_manual(
@@ -211,6 +214,79 @@ class ChunkAwareAttention(nn.Module):
         out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=dp)
 
         # Reshape: [B, H, T, d_k] → [B, T, D]
+        out = out.transpose(1, 2).contiguous().view(b, t, -1)
+        return self.dropout(self.w_out(out))
+
+    def _forward_chunk_sdpa(
+        self,
+        x: torch.Tensor,
+        pos_enc: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Chunk-level SDPA: O(T x (C+P+M)) memory instead of O(T^2).
+
+        Processes each chunk independently to avoid materializing the full TxT matrix:
+        - Q from chunk i (C tokens)
+        - K,V from the window [chunk_start - past_context, chunk_end + mla_size)
+
+        When *mask* is ``None`` the full sequence is used as the KV window so that
+        results are numerically equivalent to ``_forward_sdpa``.
+
+        Args:
+            x: Input tensor ``[B, T, D]``.
+            pos_enc: Positional encoding ``[1, T, D]``.
+            mask: Optional boolean mask ``[T, T]`` (True = attend).
+
+        Returns:
+            Output tensor ``[B, T, D]``.
+        """
+        x = self.norm(x)
+        b, t, _ = x.shape
+
+        # Project Q, K, V → [B, H, T, d_k]
+        q = self.w_q(x).view(b, t, self.num_heads, self.d_k).transpose(1, 2)
+        k = self.w_k(x).view(b, t, self.num_heads, self.d_k).transpose(1, 2)
+        v = self.w_v(x).view(b, t, self.num_heads, self.d_k).transpose(1, 2)
+
+        # Positional key projections → [1, H, T, d_k]
+        pos_k = self.pos_k(pos_enc)
+        pos_k = pos_k.view(1, t, self.num_heads, self.d_k).transpose(1, 2)
+
+        outputs: list[torch.Tensor] = []
+        n_chunks = (t + self.chunk_size - 1) // self.chunk_size
+
+        for i in range(n_chunks):
+            q_start = i * self.chunk_size
+            q_end = min(q_start + self.chunk_size, t)
+
+            if mask is not None:
+                # Restrict KV to past context + own chunk + MLA look-ahead
+                kv_start = max(0, q_start - self.past_context)
+                kv_end = min(q_end + self.mla_size, t)
+            else:
+                # No mask: use full sequence so output matches _forward_sdpa
+                kv_start = 0
+                kv_end = t
+
+            q_chunk = q[:, :, q_start:q_end]       # [B, H, C, d_k]
+            k_chunk = k[:, :, kv_start:kv_end]     # [B, H, W, d_k]
+            v_chunk = v[:, :, kv_start:kv_end]     # [B, H, W, d_k]
+            pk_chunk = pos_k[:, :, kv_start:kv_end]  # [1, H, W, d_k]
+
+            # Positional bias for this window: [B, H, C, W]
+            pos_bias = torch.matmul(q_chunk, pk_chunk.transpose(-2, -1)) / math.sqrt(self.d_k)
+            attn_mask = pos_bias
+
+            if mask is not None:
+                mask_slice = mask[q_start:q_end, kv_start:kv_end]  # [C, W]
+                attn_mask = attn_mask.masked_fill(~mask_slice.unsqueeze(0).unsqueeze(0), float("-inf"))
+
+            dp = self.attn_dropout.p if self.training else 0.0
+            out_chunk = F.scaled_dot_product_attention(q_chunk, k_chunk, v_chunk, attn_mask=attn_mask, dropout_p=dp)
+            outputs.append(out_chunk)
+
+        # Concatenate chunks: [B, H, T, d_k] → [B, T, D]
+        out = torch.cat(outputs, dim=2)
         out = out.transpose(1, 2).contiguous().view(b, t, -1)
         return self.dropout(self.w_out(out))
 

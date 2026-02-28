@@ -453,3 +453,82 @@ def test_sdpa_flag_default_false():
     """CC_G2PnPConfig() のデフォルトで use_flash_attention が False であること。"""
     config = CC_G2PnPConfig()
     assert config.use_flash_attention is False
+
+
+# ── Chunk SDPA (Phase 2) ─────────────────────────────────────────
+
+
+def test_chunk_sdpa_output_shape():
+    """Chunk SDPA path: output shape should be [B, T, D]."""
+    torch.manual_seed(42)
+    config = _make_sdpa_config()
+    attn = ChunkAwareAttention(config)
+    attn.eval()
+    x = torch.randn(2, 10, 32)
+    pos_enc = torch.randn(1, 10, 32)
+    mask = create_chunk_mask(seq_len=10, chunk_size=5, past_context=10)
+    out = attn._forward_chunk_sdpa(x, pos_enc, mask=mask)
+    assert out.shape == (2, 10, 32)
+    assert torch.isfinite(out).all()
+
+
+def test_chunk_sdpa_numerical_equivalence():
+    """Chunk SDPA と manual attention がマスク適用時に数値的に等価であること (atol=1e-4)."""
+    torch.manual_seed(10)
+    config_manual = _make_config()
+    config_sdpa = _make_sdpa_config()
+
+    manual_attn = ChunkAwareAttention(config_manual)
+    sdpa_attn = ChunkAwareAttention(config_sdpa)
+    sdpa_attn.load_state_dict(manual_attn.state_dict())
+
+    manual_attn.eval()
+    sdpa_attn.eval()
+
+    x = torch.randn(2, 9, 32)
+    pos_enc = torch.randn(1, 9, 32)
+    mask = create_chunk_mask(seq_len=9, chunk_size=3, past_context=2)
+
+    with torch.no_grad():
+        manual_out = manual_attn._forward_manual(x, pos_enc, mask=mask)
+        chunk_out = sdpa_attn._forward_chunk_sdpa(x, pos_enc, mask=mask)
+
+    assert torch.allclose(manual_out, chunk_out, atol=1e-4), (
+        f"Max diff: {(manual_out - chunk_out).abs().max().item()}"
+    )
+
+
+def test_chunk_sdpa_with_mla_mask():
+    """Chunk SDPA が MLA マスク (ルックアヘッド拡張) で正しく動作すること。"""
+    torch.manual_seed(20)
+    config = _make_sdpa_config()
+    attn = ChunkAwareAttention(config)
+    attn.eval()
+    x = torch.randn(2, 9, 32)
+    pos_enc = torch.randn(1, 9, 32)
+    mla_mask = create_mla_mask(seq_len=9, chunk_size=3, past_context=2, mla_size=1)
+
+    with torch.no_grad():
+        out = attn._forward_chunk_sdpa(x, pos_enc, mask=mla_mask)
+
+    assert out.shape == (2, 9, 32)
+    assert torch.isfinite(out).all()
+
+
+def test_chunk_sdpa_memory_smaller():
+    """Chunk SDPA が長いシーケンスでもエラーなく動作すること (メモリ効率確認)."""
+    torch.manual_seed(30)
+    config = _make_sdpa_config()
+    attn = ChunkAwareAttention(config)
+    attn.eval()
+
+    seq_len = 50
+    x = torch.randn(1, seq_len, 32)
+    pos_enc = torch.randn(1, seq_len, 32)
+    mask = create_chunk_mask(seq_len=seq_len, chunk_size=5, past_context=10)
+
+    with torch.no_grad():
+        out = attn._forward_chunk_sdpa(x, pos_enc, mask=mask)
+
+    assert out.shape == (1, seq_len, 32)
+    assert torch.isfinite(out).all()

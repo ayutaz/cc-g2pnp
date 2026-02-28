@@ -411,3 +411,76 @@ class TestCTCProjectionSharing:
             model.ctc_head.projection.weight,
             model.encoder.ctc_projection.weight,
         )
+
+
+class TestBatchedIntermediateCTC:
+    """Tests for the batched intermediate CTC loss computation."""
+
+    def test_numerical_equivalence(self):
+        """Batched intermediate CTC should be numerically equivalent to per-layer loop."""
+        torch.manual_seed(42)
+        config = CC_G2PnPConfig(
+            bpe_vocab_size=100,
+            pnp_vocab_size=20,
+            d_model=64,
+            num_heads=4,
+            d_ff=128,
+            num_layers=8,
+            upsample_factor=4,
+            conv_kernel_size=7,
+            intermediate_ctc_layers=(1, 3, 5),
+        )
+        model = CC_G2PnP(config)
+        model.eval()
+        input_ids, input_lengths, targets, target_lengths = _make_inputs(
+            config, batch_size=2, seq_len=5, target_len=10,
+        )
+        with torch.no_grad():
+            result = model(input_ids, input_lengths, targets, target_lengths)
+
+            # Recompute reference losses using the original per-layer loop
+            x = model.embedding(input_ids)
+            enc_out = model.encoder(x, input_lengths)
+            upsampled_lengths = input_lengths * config.upsample_factor
+            ctc_loss_fn = torch.nn.CTCLoss(blank=config.blank_id, reduction="mean", zero_infinity=True)
+            ref_losses = []
+            for inter_logits in enc_out["intermediate_logits"]:
+                lp = torch.log_softmax(inter_logits, dim=-1)
+                lp_t = lp.transpose(0, 1).contiguous()
+                ref_losses.append(ctc_loss_fn(lp_t, targets, upsampled_lengths, target_lengths))
+
+        assert len(result["intermediate_losses"]) == len(ref_losses)
+        for i, (batched, ref) in enumerate(zip(result["intermediate_losses"], ref_losses, strict=True)):
+            assert torch.allclose(batched, ref, atol=1e-5), (
+                f"Layer {i}: batched={batched.item():.6f} vs ref={ref.item():.6f}"
+            )
+
+    def test_backward(self):
+        """Batched intermediate CTC should propagate gradients to all parameters."""
+        torch.manual_seed(42)
+        config = CC_G2PnPConfig(
+            bpe_vocab_size=100,
+            pnp_vocab_size=20,
+            d_model=64,
+            num_heads=4,
+            d_ff=128,
+            num_layers=8,
+            upsample_factor=4,
+            conv_kernel_size=7,
+            intermediate_ctc_layers=(1, 3, 5),
+        )
+        model = CC_G2PnP(config)
+        model.train()
+        input_ids, input_lengths, targets, target_lengths = _make_inputs(
+            config, batch_size=2, seq_len=5, target_len=10,
+        )
+        result = model(input_ids, input_lengths, targets, target_lengths)
+
+        for i, loss in enumerate(result["intermediate_losses"]):
+            assert loss.requires_grad, f"intermediate_loss[{i}] should have requires_grad=True"
+
+        result["loss"].backward()
+
+        for name, p in model.named_parameters():
+            if p.requires_grad:
+                assert p.grad is not None, f"No gradient for {name}"

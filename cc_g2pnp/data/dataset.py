@@ -48,6 +48,7 @@ class G2PnPDataset(IterableDataset):
         shuffle_seed: int | None = None,
         rank: int = 0,
         world_size: int = 1,
+        lmdb_cache_dir: str | None = None,
     ) -> None:
         super().__init__()
         self._subset = subset
@@ -62,6 +63,12 @@ class G2PnPDataset(IterableDataset):
         self._vocab = PnPVocabulary()
         # Set by DataLoader worker_init_fn for per-process OpenJTalk instance
         self.jtalk = None
+
+        self._lmdb_cache = None
+        if lmdb_cache_dir is not None:
+            from cc_g2pnp.data.lmdb_cache import PnPLabelCache
+
+            self._lmdb_cache = PnPLabelCache(lmdb_cache_dir, readonly=True)
 
     def _load_stream(self, rank: int = 0, world_size: int = 1) -> Iterable[dict]:
         """Load ReazonSpeech text-only stream.
@@ -92,6 +99,8 @@ class G2PnPDataset(IterableDataset):
         skipped_pnp = 0
         skipped_ctc = 0
         yielded = 0
+        cache_hits = 0
+        cache_misses = 0
 
         for sample in self._load_stream(rank=self._rank, world_size=self._world_size):
             total += 1
@@ -111,13 +120,21 @@ class G2PnPDataset(IterableDataset):
                 skipped_length += 1
                 continue
 
-            # PnP label generation
-            pnp_tokens = generate_pnp_labels(text, jtalk=self.jtalk)
-            if not pnp_tokens:
-                skipped_pnp += 1
-                continue
+            # PnP label: try cache first, then generate on-the-fly
+            pnp_ids = None
+            if self._lmdb_cache is not None:
+                pnp_ids = self._lmdb_cache.get(text)
+                if pnp_ids is not None:
+                    cache_hits += 1
+                else:
+                    cache_misses += 1
 
-            pnp_ids = self._vocab.encode(pnp_tokens)
+            if pnp_ids is None:
+                pnp_tokens = generate_pnp_labels(text, jtalk=self.jtalk)
+                if not pnp_tokens:
+                    skipped_pnp += 1
+                    continue
+                pnp_ids = self._vocab.encode(pnp_tokens)
 
             # CTC constraint: input_length * upsample_factor >= target_length
             if len(bpe_ids) * _CTC_UPSAMPLE_FACTOR < len(pnp_ids):
@@ -147,3 +164,10 @@ class G2PnPDataset(IterableDataset):
             skipped_empty, skipped_bpe, skipped_length,
             skipped_pnp, skipped_ctc,
         )
+
+        if self._lmdb_cache is not None:
+            logger.info(
+                "LMDB cache: hits=%d, misses=%d, rate=%.1f%%",
+                cache_hits, cache_misses,
+                cache_hits / max(cache_hits + cache_misses, 1) * 100,
+            )

@@ -172,6 +172,7 @@ class Trainer:
         self.checkpoint_manager = CheckpointManager(
             checkpoint_dir=training_config.checkpoint_dir,
             keep_last_n=training_config.keep_last_n,
+            async_save=training_config.async_checkpoint,
         )
 
         # 9. TrainingLogger 構築 (メインプロセスのみ)
@@ -343,6 +344,8 @@ class Trainer:
                 data_iter.close()
             if pbar is not None:
                 pbar.close()
+            if is_main_process():
+                self.checkpoint_manager.wait_for_save()
             if self.logger is not None:
                 self.logger.close()
             if config.use_ddp:
@@ -443,6 +446,7 @@ class Trainer:
             shuffle_seed=config.seed + self._epoch,
             rank=self.rank,
             world_size=self.world_size,
+            lmdb_cache_dir=config.lmdb_cache_dir,
         )
 
         if num_workers > 0:

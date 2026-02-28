@@ -40,5 +40,5 @@ class TokenEmbedding(nn.Module):
         """
         x = self.embedding(input_ids) * self.scale  # [B, T, D]
         x = self.dropout(x)
-        B, T, D = x.shape
-        return x.unsqueeze(2).expand(B, T, self.upsample_factor, D).reshape(B, T * self.upsample_factor, D)
+        b, t, d = x.shape
+        return x.unsqueeze(2).expand(b, t, self.upsample_factor, d).reshape(b, t * self.upsample_factor, d)

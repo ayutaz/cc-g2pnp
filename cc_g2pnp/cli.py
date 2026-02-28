@@ -53,6 +53,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints", help="Directory to save checkpoints")
     parser.add_argument("--save-every", type=int, default=10_000, help="Save checkpoint every N steps")
     parser.add_argument("--keep-last", type=int, default=5, help="Number of most recent checkpoints to keep")
+    parser.add_argument("--no-async-checkpoint", action="store_false", dest="async_checkpoint",
+                        help="Disable async checkpoint saving")
+    parser.set_defaults(async_checkpoint=True)
+
+    # LMDB cache
+    parser.add_argument("--lmdb-cache-dir", type=str, default=None,
+                        help="LMDB directory with pre-computed PnP labels")
 
     # Logging
     parser.add_argument("--log-every", type=int, default=100, help="Log metrics every N steps")
@@ -125,6 +132,8 @@ def main() -> None:
         use_ddp=args.ddp,
         val_every_n_steps=args.val_every,
         seed=args.seed,
+        lmdb_cache_dir=args.lmdb_cache_dir,
+        async_checkpoint=args.async_checkpoint,
     )
 
     trainer = Trainer(model_config, training_config, rank=rank, world_size=world_size)

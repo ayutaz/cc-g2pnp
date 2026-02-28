@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import sys
 
 import torch
 
 from cc_g2pnp._patch_pyopenjtalk import apply as _patch_pyopenjtalk
 from cc_g2pnp.data.tokenizer import G2PnPTokenizer
-from cc_g2pnp.data.vocabulary import PnPVocabulary
 from cc_g2pnp.evaluation.eval_data import EvalDataGenerator
 from cc_g2pnp.evaluation.pipeline import EvalConfig, EvaluationPipeline
 
