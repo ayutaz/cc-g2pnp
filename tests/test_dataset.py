@@ -305,3 +305,60 @@ class TestLmdbCacheIntegration:
             _collect(ds, [_make_sample(text)])
 
         assert any("LMDB cache" in record.message for record in caplog.records)
+
+
+class TestBinaryLmdbCacheIntegration:
+    """Tests for binary format LMDB cache integration."""
+
+    def test_dataset_with_binary_lmdb_cache(self, tmp_path):
+        """bytes 形式の LMDB キャッシュでデータセットが正常に読取できる。"""
+        from cc_g2pnp.data.lmdb_cache import PnPLabelCache
+        from cc_g2pnp.data.pnp_labeler import generate_pnp_labels
+        from cc_g2pnp.data.vocabulary import PnPVocabulary
+
+        text = "今日はいい天気"
+        vocab = PnPVocabulary()
+        pnp_tokens = generate_pnp_labels(text)
+        pnp_ids = vocab.encode(pnp_tokens)
+
+        # PnPLabelCache.put() は新しい bytes 形式で書き込む
+        cache_dir = str(tmp_path / "binary_cache")
+        with PnPLabelCache(cache_dir, readonly=False) as cache:
+            cache.put(text, pnp_ids)
+
+        ds = _make_dataset(lmdb_cache_dir=cache_dir)
+        with patch("cc_g2pnp.data.dataset.generate_pnp_labels") as mock_gen:
+            results = _collect(ds, [_make_sample(text)])
+
+        mock_gen.assert_not_called()
+        assert len(results) == 1
+        assert results[0]["labels"] == pnp_ids
+
+    def test_dataset_with_legacy_json_lmdb_cache(self, tmp_path):
+        """レガシー JSON 形式の LMDB キャッシュでも後方互換で読取できる。"""
+        import json
+
+        import lmdb
+
+        from cc_g2pnp.data.pnp_labeler import generate_pnp_labels
+        from cc_g2pnp.data.vocabulary import PnPVocabulary
+
+        text = "今日はいい天気"
+        vocab = PnPVocabulary()
+        pnp_tokens = generate_pnp_labels(text)
+        pnp_ids = vocab.encode(pnp_tokens)
+
+        # レガシー JSON 形式で直接書込
+        cache_dir = str(tmp_path / "json_cache")
+        env = lmdb.open(cache_dir, map_size=10 * 1024**3)
+        with env.begin(write=True) as txn:
+            txn.put(text.encode("utf-8"), json.dumps(pnp_ids).encode("utf-8"))
+        env.close()
+
+        ds = _make_dataset(lmdb_cache_dir=cache_dir)
+        with patch("cc_g2pnp.data.dataset.generate_pnp_labels") as mock_gen:
+            results = _collect(ds, [_make_sample(text)])
+
+        mock_gen.assert_not_called()
+        assert len(results) == 1
+        assert results[0]["labels"] == pnp_ids

@@ -47,6 +47,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-input-len", type=int, default=512, help="Maximum BPE token length per sample (T4: use 128)")
     parser.add_argument("--dataset-subset", type=str, default="all", help="ReazonSpeech dataset subset name")
     parser.add_argument("--num-workers", type=int, default=4, help="DataLoader worker processes for parallel preprocessing")
+    parser.add_argument("--mp-context", type=str, default="forkserver",
+                        choices=["fork", "forkserver", "spawn"],
+                        help="Multiprocessing start method for DataLoader workers")
     parser.add_argument("--prefetch-count", type=int, default=4, help="Number of batches to prefetch in background")
 
     # Checkpoint
@@ -120,6 +123,7 @@ def main() -> None:
         max_input_len=args.max_input_len,
         dataset_subset=args.dataset_subset,
         num_workers=args.num_workers,
+        multiprocessing_context=args.mp_context,
         prefetch_count=args.prefetch_count,
         checkpoint_dir=args.checkpoint_dir,
         save_every_n_steps=args.save_every,

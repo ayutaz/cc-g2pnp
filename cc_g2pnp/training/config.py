@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+_VALID_MP_CONTEXTS = {"fork", "forkserver", "spawn"}
+
 
 @dataclass
 class TrainingConfig:
@@ -85,6 +87,9 @@ class TrainingConfig:
     num_workers: int = 4
     """Number of DataLoader worker processes for parallel preprocessing."""
 
+    multiprocessing_context: str = "forkserver"
+    """Multiprocessing start method for DataLoader workers (fork/forkserver/spawn)."""
+
     prefetch_count: int = 4
     """Number of batches to prefetch in background (0 = no prefetch)."""
 
@@ -163,6 +168,12 @@ class TrainingConfig:
             raise ValueError(msg)
         if self.seed < 0:
             msg = f"seed must be >= 0, got {self.seed}"
+            raise ValueError(msg)
+        if self.multiprocessing_context not in _VALID_MP_CONTEXTS:
+            msg = f"multiprocessing_context must be one of {_VALID_MP_CONTEXTS}, got '{self.multiprocessing_context}'"
+            raise ValueError(msg)
+        if self.num_workers < 0:
+            msg = f"num_workers must be >= 0, got {self.num_workers}"
             raise ValueError(msg)
         if self.max_steps is not None and self.max_steps <= 0:
             msg = f"max_steps must be positive or None, got {self.max_steps}"

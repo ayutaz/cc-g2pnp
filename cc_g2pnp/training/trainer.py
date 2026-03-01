@@ -459,6 +459,7 @@ class Trainer:
                 worker_init_fn=_worker_init_fn,
                 prefetch_factor=config.prefetch_count,
                 persistent_workers=True,
+                multiprocessing_context=config.multiprocessing_context,
             )
             # DataLoader → dynamic_batch_sampler → collator
             sampler = dynamic_batch_sampler(

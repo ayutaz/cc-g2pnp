@@ -15,6 +15,9 @@ if TYPE_CHECKING:
 # 171 文字超のテキストではこの上限を超える。
 _MAX_KEY_BYTES = 511
 
+# バイナリ形式マーカー (vocab_size=140 で全 ID が uint8 に収まる)
+_FORMAT_VERSION_BYTES = b"\x01"
+
 
 class PnPLabelCache:
     """Read/write cache for PnP label IDs, backed by LMDB."""
@@ -47,18 +50,21 @@ class PnPLabelCache:
             value = txn.get(self._make_key(text))
             if value is None:
                 return None
+            # 先頭バイトが \x01 なら bytes 形式、それ以外はレガシー JSON (後方互換)
+            if value[:1] == _FORMAT_VERSION_BYTES:
+                return list(value[1:])
             return json.loads(value)
 
     def put(self, text: str, pnp_ids: list[int]) -> None:
         """Store PnP label IDs for a text string."""
         with self.env.begin(write=True) as txn:
-            txn.put(self._make_key(text), json.dumps(pnp_ids).encode("utf-8"))
+            txn.put(self._make_key(text), _FORMAT_VERSION_BYTES + bytes(pnp_ids))
 
     def put_batch(self, items: list[tuple[str, list[int]]]) -> None:
         """Store multiple items in a single transaction."""
         with self.env.begin(write=True) as txn:
             for text, pnp_ids in items:
-                txn.put(self._make_key(text), json.dumps(pnp_ids).encode("utf-8"))
+                txn.put(self._make_key(text), _FORMAT_VERSION_BYTES + bytes(pnp_ids))
 
     def __len__(self) -> int:
         with self.env.begin() as txn:
