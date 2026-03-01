@@ -91,6 +91,15 @@ class G2PnPDataset(IterableDataset):
             ds = ds.shuffle(seed=self._shuffle_seed, buffer_size=10_000)
         return ds
 
+    def close(self) -> None:
+        """LMDB キャッシュをクローズしてリソースを解放する。"""
+        if self._lmdb_cache is not None:
+            self._lmdb_cache.close()
+            self._lmdb_cache = None
+
+    def __del__(self) -> None:
+        self.close()
+
     def __iter__(self) -> Iterator[dict]:
         total = 0
         skipped_empty = 0
@@ -102,7 +111,18 @@ class G2PnPDataset(IterableDataset):
         cache_hits = 0
         cache_misses = 0
 
-        for sample in self._load_stream(rank=self._rank, world_size=self._world_size):
+        # DataLoader マルチワーカー対応: ワーカーごとにシャードを分割して重複を防ぐ
+        import torch.utils.data
+
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is not None:
+            effective_rank = self._rank * worker_info.num_workers + worker_info.id
+            effective_world_size = self._world_size * worker_info.num_workers
+        else:
+            effective_rank = self._rank
+            effective_world_size = self._world_size
+
+        for sample in self._load_stream(rank=effective_rank, world_size=effective_world_size):
             total += 1
             text = sample.get("transcription", "")
             if not text or not text.strip():

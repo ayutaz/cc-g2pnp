@@ -413,6 +413,90 @@ class TestCTCProjectionSharing:
         )
 
 
+class TestForwardStreaming:
+    """Tests for forward_streaming() method."""
+
+    @pytest.fixture()
+    def streaming_config(self):
+        """ストリーミングテスト用の小さなコンフィグ。"""
+        return CC_G2PnPConfig(
+            bpe_vocab_size=100,
+            pnp_vocab_size=20,
+            d_model=32,
+            num_heads=2,
+            d_ff=64,
+            num_layers=2,
+            upsample_factor=4,
+            conv_kernel_size=3,
+            chunk_size=5,
+            past_context=10,
+            mla_size=1,
+            intermediate_ctc_layers=(1,),
+        )
+
+    @pytest.fixture()
+    def streaming_model(self, streaming_config):
+        """ストリーミングテスト用モデル (eval モード)。"""
+        torch.manual_seed(42)
+        m = CC_G2PnP(streaming_config)
+        m.eval()
+        return m
+
+    def test_forward_streaming_output_shape(self, streaming_model, streaming_config):
+        """forward_streaming() の出力形状が [B, chunk_size, pnp_vocab_size] であるか。"""
+        batch_size = 2
+        chunk_size = streaming_config.chunk_size
+        mla_size = streaming_config.mla_size
+        d_model = streaming_config.d_model
+
+        state = streaming_model.init_streaming_state(batch_size)
+        chunk_frames = torch.randn(batch_size, chunk_size + mla_size, d_model)
+
+        log_probs, _ = streaming_model.forward_streaming(chunk_frames, state)
+
+        expected_shape = (batch_size, chunk_size, streaming_config.pnp_vocab_size)
+        assert log_probs.shape == expected_shape
+
+    def test_forward_streaming_state_update(self, streaming_model, streaming_config):
+        """ストリーミング状態が更新されるか (processed_frames が chunk_size ずつ増加)。"""
+        batch_size = 1
+        chunk_size = streaming_config.chunk_size
+        mla_size = streaming_config.mla_size
+        d_model = streaming_config.d_model
+
+        state = streaming_model.init_streaming_state(batch_size)
+        assert state.processed_frames == 0
+
+        chunk_frames = torch.randn(batch_size, chunk_size + mla_size, d_model)
+
+        # 1チャンク目
+        _, state1 = streaming_model.forward_streaming(chunk_frames, state)
+        assert state1.processed_frames == chunk_size
+
+        # 2チャンク目
+        _, state2 = streaming_model.forward_streaming(chunk_frames, state1)
+        assert state2.processed_frames == chunk_size * 2
+
+    def test_forward_streaming_consistency(self, streaming_model, streaming_config):
+        """複数チャンクの逐次処理が有限値を出力するか (形状と有限値の確認)。"""
+        batch_size = 1
+        chunk_size = streaming_config.chunk_size
+        mla_size = streaming_config.mla_size
+        d_model = streaming_config.d_model
+
+        state = streaming_model.init_streaming_state(batch_size)
+        torch.manual_seed(0)
+
+        for _ in range(3):
+            chunk_frames = torch.randn(batch_size, chunk_size + mla_size, d_model)
+            log_probs, state = streaming_model.forward_streaming(chunk_frames, state)
+
+            # 出力形状の確認
+            assert log_probs.shape == (batch_size, chunk_size, streaming_config.pnp_vocab_size)
+            # 全要素が有限値であるか
+            assert torch.isfinite(log_probs).all()
+
+
 class TestBatchedIntermediateCTC:
     """Tests for the batched intermediate CTC loss computation."""
 

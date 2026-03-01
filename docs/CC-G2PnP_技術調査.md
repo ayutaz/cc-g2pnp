@@ -440,7 +440,7 @@ CC-G2PnP論文のPnP系列生成の参考実装として有用。
 - ESPnetからSelf-conditioned CTCの実装を参考 → `ConformerEncoder` に中間CTC+フィードバック実装
 - ESPnet Issue #4031を参考にDDP設定 → `find_unused_parameters=True`
 - SpeechBrainからDynamic Chunk Trainingのパターンを参考
-- 学習パイプライン: Trainer + TrainingConfig + AdamW (decay/no_decay, **fused AdamW対応 Phase 1最適化**) + ExponentialLR + CheckpointManager (**非同期保存 `async_save` フラグ Phase 2最適化**) + DDP (**find_unused_parameters=True, static_graph最適化**) + AMP + W&B (必須)
+- 学習パイプライン: Trainer + TrainingConfig + AdamW (decay/no_decay, **fused AdamW対応 Phase 1最適化**) + ExponentialLR + CheckpointManager (**非同期保存 `async_checkpoint` フラグ Phase 2最適化**) + DDP (**find_unused_parameters=True, static_graph最適化**) + AMP + W&B (必須)
 - ストリーミング推論: Conv cache + KV cache + MLA look-ahead (**torch.inference_mode()使用 Phase 0最適化**)
 - 評価パイプライン: 6メトリクス (`jiwer.wer` ベース) + 4ドメインビルトインデータ + batch/streaming推論 + **torch.compile オプション (`use_compile` フラグ, +30-50% 推論高速化) Phase 2最適化** + FP16 autocast（CUDA時）+ 長さソートバッチング
 - データパイプライン: **ネットワークエラーリトライロジック実装済み** (exponential backoff) + **PnP ラベル LMDB キャッシュ (`PnPLabelCache`) Phase 2最適化** → GPU利用率を大幅改善
@@ -744,7 +744,7 @@ fugashi[unidic]             # MeCab + UniDic (形態素解析)
 pyopenjtalk-plus>=0.4.1     # G2P + Full-context labels（Python 3.13 Windows対応フォーク）
 
 # Training
-wandb>=0.16.0               # 学習監視（必須、未ログイン時は RuntimeError）
+wandb>=0.15.0               # 学習監視（必須、未ログイン時は RuntimeError）
 
 # Evaluation
 jiwer>=3.0.0                # CER/WER計算

@@ -343,7 +343,12 @@ def test_sdpa_different_batch_sizes():
 
 
 def test_sdpa_numerical_equivalence():
-    """SDPA and manual paths produce numerically equivalent results (no mask)."""
+    """SDPA と manual path が数値的に等価であること (マスクなし).
+
+    use_flash_attention=True の場合、forward() は _forward_chunk_sdpa にディスパッチする。
+    マスクなし時は _forward_chunk_sdpa が全シーケンスを KV ウィンドウとして使用するため
+    _forward_manual と数値的に等価になる。
+    """
     torch.manual_seed(0)
     config_manual = _make_config()
     config_sdpa = _make_sdpa_config()
@@ -395,7 +400,7 @@ def test_sdpa_numerical_equivalence_with_mask():
 
 
 def test_sdpa_config_flag_dispatch():
-    """use_flash_attention=False routes to _forward_manual; True routes to _forward_sdpa."""
+    """use_flash_attention=False は _forward_manual にディスパッチ; True は _forward_chunk_sdpa にディスパッチ."""
     torch.manual_seed(2)
 
     manual_attn = ChunkAwareAttention(_make_config())
@@ -414,7 +419,7 @@ def test_sdpa_config_flag_dispatch():
     with torch.no_grad():
         out_manual = manual_attn._forward_manual(x, pos_enc)
         out_sdpa = sdpa_attn._forward_sdpa(x, pos_enc)
-        # forward() should dispatch to respective paths
+        # forward() should dispatch to respective paths (_forward_chunk_sdpa when use_flash_attention=True)
         out_dispatch_manual = manual_attn(x, pos_enc)
         out_dispatch_sdpa = sdpa_attn(x, pos_enc)
 

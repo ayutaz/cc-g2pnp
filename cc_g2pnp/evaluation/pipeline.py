@@ -222,6 +222,9 @@ class EvaluationPipeline:
         """Create pipeline from a saved checkpoint.
 
         Loads model config and weights from checkpoint.
+
+        セキュリティ警告: 信頼できるソースのチェックポイントのみ読み込むこと。
+        未検証の外部ファイルを渡すと pickle 任意コード実行のリスクがある。
         """
         from pathlib import Path as _Path
 

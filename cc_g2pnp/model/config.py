@@ -100,6 +100,9 @@ class CC_G2PnPConfig:
         if self.num_layers <= 0:
             msg = f"num_layers must be positive, got {self.num_layers}"
             raise ValueError(msg)
+        if self.conv_expansion_factor != 2:
+            msg = f"conv_expansion_factor must be 2 (required by GLU), got {self.conv_expansion_factor}"
+            raise ValueError(msg)
         for layer_idx in self.intermediate_ctc_layers:
             if layer_idx >= self.num_layers:
                 msg = f"intermediate_ctc_layers index {layer_idx} >= num_layers ({self.num_layers})"

@@ -34,7 +34,7 @@ def main() -> None:
         args.subset,
         split="train",
         streaming=True,
-        trust_remote_code=True,
+        trust_remote_code=True,  # セキュリティリスク: 信頼済みの公式データセットのみに使用すること
     ).select_columns(["transcription"])
 
     cache = PnPLabelCache(args.output, readonly=False)

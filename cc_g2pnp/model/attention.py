@@ -184,6 +184,8 @@ class ChunkAwareAttention(nn.Module):
     ) -> torch.Tensor:
         """F.scaled_dot_product_attention path (FlashAttention / EFFICIENT_ATTENTION kernel).
 
+        Phase 1 (SDPA 基本対応) の参照実装。現在 forward() は _forward_chunk_sdpa() (Phase 2) にディスパッチする。テストでの数値検証用に保持。
+
         Numerically equivalent to ``_forward_manual``:
         - pos_bias is pre-scaled by 1/sqrt(d_k) and passed as attn_mask
         - SDPA internally scales Q@K^T by 1/sqrt(d_k)
@@ -242,6 +244,9 @@ class ChunkAwareAttention(nn.Module):
         """
         x = self.norm(x)
         b, t, _ = x.shape
+
+        if t == 0:
+            return x  # Empty sequence, return as-is
 
         # Project Q, K, V → [B, H, T, d_k]
         q = self.w_q(x).view(b, t, self.num_heads, self.d_k).transpose(1, 2)

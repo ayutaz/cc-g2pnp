@@ -78,13 +78,15 @@ cc_g2pnp/
 └── utils/
 scripts/
 ├── train.py               # argparse CLIエントリポイント (Phase 3 ✅)
-└── preprocess_pnp.py      # PnP ラベル LMDB キャッシュ生成スクリプト (Phase 2-opt ✅)
+├── preprocess_pnp.py      # PnP ラベル LMDB キャッシュ生成スクリプト (Phase 2-opt ✅)
+├── evaluate.py            # 推論デモ + 評価パイプライン実行スクリプト
+└── verify_ddp.py          # DDP 動作検証スクリプト (torchrun)
 tests/
 ├── test_g2p.py            # pyopenjtalk/fugashi基本テスト (5件)
 ├── test_tokenizer.py      # CALM2トークナイザテスト (6件)
 ├── test_data_loading.py   # ReazonSpeechロードテスト (3件, network)
 ├── test_vocabulary.py     # CTC語彙テスト (8件)
-├── test_pnp_labeler.py    # PnPラベル生成テスト (9件)
+├── test_pnp_labeler.py    # PnPラベル生成テスト (10件)
 ├── test_pipeline.py       # 統合テスト (7件 + 1件network)
 ├── test_dataset.py        # データセットテスト
 ├── test_collator.py       # コレータテスト
@@ -332,7 +334,7 @@ tests/
 |---------|------|
 | `cc_g2pnp/training/config.py` | `TrainingConfig` dataclass (21フィールド) + `__post_init__` validation + `scheduler_gamma` 自動計算 |
 | `cc_g2pnp/training/optimizer.py` | `build_optimizer` (AdamW, decay/no_decay分離, fused=True) + `build_scheduler` (LinearLR warmup + ExponentialLR) |
-| `cc_g2pnp/training/checkpoint.py` | `CheckpointManager` — save/load/load_latest/cleanup (keep_last_n), DDP対応, 非同期保存 (`async_save` フラグ), `model_config` キー保存 |
+| `cc_g2pnp/training/checkpoint.py` | `CheckpointManager` — save/load/load_latest/cleanup (keep_last_n), DDP対応, 非同期保存 (`async_checkpoint` フラグ), `model_config` キー保存 |
 | `cc_g2pnp/training/logger.py` | `TrainingLogger` — W&B必須、未ログイン時 RuntimeError、context manager |
 | `cc_g2pnp/training/distributed.py` | `setup_ddp`, `cleanup_ddp`, `is_main_process`, `get_rank`, `get_world_size`, `reduce_metrics`, `wrap_model_ddp` |
 | `cc_g2pnp/training/evaluator.py` | `Evaluator` — PnP CER (jiwer) + collator key mapping (labels→targets) |

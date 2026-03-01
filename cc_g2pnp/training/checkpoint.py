@@ -170,8 +170,13 @@ class CheckpointManager:
             msg = f"Checkpoint not found: {path}"
             raise FileNotFoundError(msg)
         logger.info("Loading checkpoint: %s", path)
+        # セキュリティ: weights_only=True で pickle 任意コード実行リスクを排除する。
+        # チェックポイントは dataclasses.asdict() でプレーン dict に変換済みのため
+        # state_dict (テンソル + Python プリミティブ) のみで構成され、
+        # weights_only=True での読み込みが可能。
+        # 注意: 信頼できるソースのチェックポイントのみ読み込むこと。
         # map_location="cpu" で読み込み、呼び出し元で適切なデバイスに移動する
-        return torch.load(path, weights_only=False, map_location="cpu")
+        return torch.load(path, weights_only=True, map_location="cpu")
 
     def cleanup(self) -> None:
         """古いチェックポイントを削除する。

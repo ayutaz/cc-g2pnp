@@ -238,8 +238,9 @@ class Trainer:
                         if hasattr(data_iter, "close"):
                             data_iter.close()
                         data_iter = self._create_data_iterator()
-                        batch = next(data_iter)
-                        break
+                        # 新しいイテレータへの最初の next() もネットワークエラーの可能性があるため
+                        # リトライループの先頭に戻り、既存のネットワークエラーリトライで保護する
+                        continue
                     except (ConnectionError, OSError, TimeoutError) as exc:
                         wait = min(2 ** _retry * 10, 300)
                         logger.warning(
