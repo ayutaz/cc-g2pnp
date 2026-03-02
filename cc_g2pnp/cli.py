@@ -79,6 +79,10 @@ def parse_args() -> argparse.Namespace:
     # DDP
     parser.add_argument("--ddp", action="store_true", help="Enable DistributedDataParallel training")
 
+    # SDPA
+    parser.add_argument("--use-flash-attention", action="store_true",
+                        help="Enable SDPA backend (Memory-Efficient on T4, recommended with --amp-dtype float16)")
+
     # Validation
     parser.add_argument("--val-every", type=int, default=5_000, help="Run validation every N steps")
 
@@ -108,7 +112,7 @@ def main() -> None:
         rank = 0
         world_size = 1
 
-    model_config = CC_G2PnPConfig()
+    model_config = CC_G2PnPConfig(use_flash_attention=args.use_flash_attention)
 
     training_config = TrainingConfig(
         learning_rate=args.lr,

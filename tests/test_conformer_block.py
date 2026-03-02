@@ -141,3 +141,36 @@ def test_eval_deterministic():
     out1 = block(x, pos_enc)
     out2 = block(x, pos_enc)
     assert torch.equal(out1, out2)
+
+
+def test_sdpa_forward_shape():
+    """SDPA path should produce the same output shape as manual path."""
+    config = _small_config(use_flash_attention=True)
+    block = ConformerBlock(config)
+    block.eval()
+    x = _make_input(2, 16)
+    pos_enc = _make_pos_enc(16)
+    out = block(x, pos_enc)
+    assert out.shape == (2, 16, 64)
+    assert not torch.isnan(out).any()
+
+
+def test_sdpa_numerical_equivalence():
+    """SDPA ON/OFF should produce approximately equal outputs."""
+    torch.manual_seed(0)
+    config_off = _small_config(use_flash_attention=False)
+    block_off = ConformerBlock(config_off)
+    block_off.eval()
+
+    torch.manual_seed(0)
+    config_on = _small_config(use_flash_attention=True)
+    block_on = ConformerBlock(config_on)
+    block_on.eval()
+
+    x = _make_input(2, 16)
+    pos_enc = _make_pos_enc(16)
+    mask = torch.ones(16, 16, dtype=torch.bool)
+
+    out_off = block_off(x, pos_enc, mask=mask)
+    out_on = block_on(x, pos_enc, mask=mask)
+    assert torch.allclose(out_off, out_on, atol=1e-5)

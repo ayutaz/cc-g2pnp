@@ -413,6 +413,54 @@ class TestCTCProjectionSharing:
         )
 
 
+class TestSDPA:
+    """Tests for SDPA (Flash Attention) backend."""
+
+    def test_model_with_flash_attention(self):
+        """Model with use_flash_attention=True should produce finite loss."""
+        torch.manual_seed(42)
+        config = CC_G2PnPConfig(
+            bpe_vocab_size=100,
+            pnp_vocab_size=20,
+            d_model=64,
+            num_heads=4,
+            d_ff=128,
+            num_layers=4,
+            upsample_factor=4,
+            conv_kernel_size=7,
+            intermediate_ctc_layers=(1,),
+            use_flash_attention=True,
+        )
+        model = CC_G2PnP(config)
+        model.eval()
+        input_ids, input_lengths, targets, target_lengths = _make_inputs(config)
+        result = model(input_ids, input_lengths, targets, target_lengths)
+        assert torch.isfinite(result["loss"])
+
+    def test_model_sdpa_backward(self):
+        """Backward pass should complete successfully with SDPA enabled."""
+        torch.manual_seed(42)
+        config = CC_G2PnPConfig(
+            bpe_vocab_size=100,
+            pnp_vocab_size=20,
+            d_model=64,
+            num_heads=4,
+            d_ff=128,
+            num_layers=4,
+            upsample_factor=4,
+            conv_kernel_size=7,
+            intermediate_ctc_layers=(1,),
+            use_flash_attention=True,
+        )
+        model = CC_G2PnP(config)
+        model.train()
+        input_ids, input_lengths, targets, target_lengths = _make_inputs(config)
+        result = model(input_ids, input_lengths, targets, target_lengths)
+        result["loss"].backward()
+        grad_params = [p for p in model.parameters() if p.grad is not None]
+        assert len(grad_params) > 0
+
+
 class TestForwardStreaming:
     """Tests for forward_streaming() method."""
 

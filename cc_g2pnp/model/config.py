@@ -103,6 +103,15 @@ class CC_G2PnPConfig:
         if self.conv_expansion_factor != 2:
             msg = f"conv_expansion_factor must be 2 (required by GLU), got {self.conv_expansion_factor}"
             raise ValueError(msg)
+        if self.chunk_size <= 0:
+            msg = f"chunk_size must be positive, got {self.chunk_size}"
+            raise ValueError(msg)
+        if self.past_context < 0:
+            msg = f"past_context must be >= 0, got {self.past_context}"
+            raise ValueError(msg)
+        if self.mla_size < 0:
+            msg = f"mla_size must be >= 0, got {self.mla_size}"
+            raise ValueError(msg)
         for layer_idx in self.intermediate_ctc_layers:
             if layer_idx >= self.num_layers:
                 msg = f"intermediate_ctc_layers index {layer_idx} >= num_layers ({self.num_layers})"

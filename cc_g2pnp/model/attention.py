@@ -123,7 +123,7 @@ class ChunkAwareAttention(nn.Module):
     ) -> torch.Tensor:
         """Compute chunk-aware multi-head self-attention.
 
-        Dispatches to ``_forward_chunk_sdpa`` (chunk-level SDPA, Phase 2) when
+        Dispatches to ``_forward_sdpa`` (full-sequence SDPA) when
         ``use_flash_attention=True``, otherwise falls back to ``_forward_manual``.
 
         Args:
@@ -135,7 +135,7 @@ class ChunkAwareAttention(nn.Module):
             Output tensor ``[B, T, D]``.
         """
         if self.use_flash_attention:
-            return self._forward_chunk_sdpa(x, pos_enc, mask)
+            return self._forward_sdpa(x, pos_enc, mask)
         return self._forward_manual(x, pos_enc, mask)
 
     def _forward_manual(
@@ -184,8 +184,7 @@ class ChunkAwareAttention(nn.Module):
     ) -> torch.Tensor:
         """F.scaled_dot_product_attention path (FlashAttention / EFFICIENT_ATTENTION kernel).
 
-        Phase 1 (SDPA 基本対応) の参照実装。現在 forward() は _forward_chunk_sdpa() (Phase 2) にディスパッチする。テストでの数値検証用に保持。
-
+        Default SDPA path: single SDPA call over the full sequence.
         Numerically equivalent to ``_forward_manual``:
         - pos_bias is pre-scaled by 1/sqrt(d_k) and passed as attn_mask
         - SDPA internally scales Q@K^T by 1/sqrt(d_k)
@@ -331,23 +330,30 @@ class ChunkAwareAttention(nn.Module):
         k = torch.cat([k_cache, k_new], dim=2)  # [B, H, cache_len+C, d_k]
         v = torch.cat([v_cache, v_new], dim=2)  # [B, H, cache_len+C, d_k]
 
-        # Attention scores: Q attends to all of K
-        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
-
         # Relative positional bias
         total_len = k.size(2)
         pos_k = self.pos_k(pos_enc)  # [1, total_len, D]
         pos_k = pos_k.view(1, total_len, self.num_heads, self.d_k).transpose(1, 2)
         pos_bias = torch.matmul(q, pos_k.transpose(-2, -1)) / math.sqrt(self.d_k)
-        scores = scores + pos_bias
 
-        if mask is not None:
-            scores = scores.masked_fill(~mask.unsqueeze(0).unsqueeze(0), float("-inf"))
+        if self.use_flash_attention:
+            # SDPA path: pos_bias as attn_mask with chunk mask baked in
+            if mask is not None:
+                attn_mask = pos_bias.masked_fill(~mask.unsqueeze(0).unsqueeze(0), float("-inf"))
+            else:
+                attn_mask = pos_bias
+            dp = self.attn_dropout.p if self.training else 0.0
+            out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=dp)
+        else:
+            # Manual matmul+softmax path
+            scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
+            scores = scores + pos_bias
+            if mask is not None:
+                scores = scores.masked_fill(~mask.unsqueeze(0).unsqueeze(0), float("-inf"))
+            attn = F.softmax(scores, dim=-1)
+            attn = self.attn_dropout(attn)
+            out = torch.matmul(attn, v)  # [B, H, C, d_k]
 
-        attn = F.softmax(scores, dim=-1)
-        attn = self.attn_dropout(attn)
-
-        out = torch.matmul(attn, v)  # [B, H, C, d_k]
         out = out.transpose(1, 2).contiguous().view(b, c, -1)
 
         # Update KV cache: keep last past_context frames

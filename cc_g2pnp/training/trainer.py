@@ -539,6 +539,18 @@ class Trainer:
         model_to_load = (
             self.model.module if hasattr(self.model, "module") else self.model
         )
+
+        saved_model_config = checkpoint.get("model_config")
+        if saved_model_config is not None:
+            current_config_dict = dataclasses.asdict(model_to_load.config)
+            mismatches = {
+                k: (saved_model_config[k], current_config_dict[k])
+                for k in saved_model_config
+                if k in current_config_dict and saved_model_config[k] != current_config_dict[k]
+            }
+            if mismatches:
+                logger.warning("Model config mismatch between checkpoint and current config: %s", mismatches)
+
         model_to_load.load_state_dict(checkpoint["model_state_dict"])
 
         # Optimizer/Scheduler state_dict 復元
