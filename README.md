@@ -150,7 +150,7 @@ torchrun --nproc_per_node=N -m cc_g2pnp.cli --ddp
 | `--prefetch-count` | `4` | バックグラウンドでプリフェッチするバッチ数 |
 | `--lmdb-cache-dir` | - | PnP ラベル LMDB キャッシュディレクトリ (`scripts/preprocess_pnp.py` で事前生成) |
 | `--no-async-checkpoint` | - | 非同期チェックポイント保存を無効化 |
-| `--use-flash-attention` | 有効 | SDPA 有効化 (デフォルト有効) |
+| `--use-flash-attention` | (off) | SDPA 有効化 (推奨, T4 で 3.5x 高速化) |
 | `--use-torch-compile` | - | FFN+ConvModule を torch.compile で最適化 |
 | `--no-gradient-checkpointing` | - | Gradient checkpointing を無効化 |
 | `--sort-batch-buffer` | - | sorted dynamic batching のバッファサイズ |

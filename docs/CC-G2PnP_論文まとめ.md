@@ -203,7 +203,7 @@ Conformerのストリーミング対応のために、self-attention層とconvol
 | Conformer Encoder (8層, 512d) | ✅ 完了 | 84M params, 論文全明示パラメータ一致 |
 | Self-conditioned CTC | ✅ 完了 | Layer 1,3,5 (0-indexed), 重み 1/3 |
 | Chunk-aware Streaming Attention | ✅ 完了 | C=5, P=10, MLA M=1 |
-| SDPA 高速化 | ✅ 完了 | T4 で 3.5x 訓練高速化, デフォルト有効 |
+| SDPA 高速化 | ✅ 完了 | T4 で 3.5x 訓練高速化, `--use-flash-attention` で有効化 |
 | データパイプライン | ✅ 完了 | ReazonSpeech streaming + LMDB キャッシュ |
 | 学習パイプライン | ✅ 完了 | AMP + DDP + AdamW + SDPA |
 | ストリーミング推論 | ✅ 完了 | Conv/KV cache + MLA look-ahead |

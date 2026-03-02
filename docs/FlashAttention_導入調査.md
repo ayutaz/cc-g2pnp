@@ -267,7 +267,7 @@ FA 未導入の現状で T4 (15 GB) で安定動作する推奨設定:
 > - **チェックポイント復元時の model_config 不一致警告追加** ✅ — 安全性強化
 > - **別施策の Phase 0/1/2 最適化は完了済み** — fused AdamW・勾配 clip・LMDB キャッシュ・GroupNorm 等 (FlashAttention 導入とは独立した施策として実施済み)
 > - **P0+P1+Triton 訓練高速化実装済み** ✅ — `triton_attention.py` に Triton RPE fused kernel を実装。Forward は Triton カーネルで Q@K^T + Q@pos_K^T を融合、Backward は autograd remat (float32)。**訓練時は Triton backward が 37.9% 遅いため、`not self.training` 条件で SDPA にフォールバック**。推論時のみ Triton dispatch。
-> - **`use_flash_attention` デフォルト True に変更** ✅ — 全モデルで SDPA がデフォルト有効
+> - **`use_flash_attention` CLI 対応** ✅ — `--use-flash-attention` で SDPA 有効化 (config デフォルト False, 明示指定が必要)
 > - **テスト数: 688 件** (P0+P1+Triton テスト含む)
 > - **Phase 3 が次の実装対象** (RoPE 移行による FlashAttention フル互換化)
 

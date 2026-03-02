@@ -47,7 +47,7 @@ cc_g2pnp/
 │   └── lmdb_cache.py      # PnP ラベル LMDB キャッシュ
 ├── model/             # モデル定義 (Phase 2 ✅)
 │   ├── __init__.py          # 15 public exports
-│   ├── config.py            # CC_G2PnPConfig dataclass (use_flash_attention=True, use_groupnorm=True フラグ含む)
+│   ├── config.py            # CC_G2PnPConfig dataclass (use_flash_attention=False, use_groupnorm=True フラグ含む)
 │   ├── embedding.py         # TokenEmbedding (BPE → D, expand+contiguous ×8)
 │   ├── positional_encoding.py # RelativePositionalEncoding (sinusoidal)
 │   ├── attention.py         # ChunkAwareAttention + create_chunk_mask/mla_mask + forward_streaming + _forward_sdpa/_forward_chunk_sdpa (SDPA対応) + _forward_triton (推論専用 Triton RPE kernel)
@@ -277,7 +277,7 @@ tests/
 
 | ファイル | 概要 |
 |---------|------|
-| `cc_g2pnp/model/config.py` | `CC_G2PnPConfig` dataclass + `__post_init__` validation + `use_flash_attention` (default=True), `use_groupnorm` (default=True) フラグ |
+| `cc_g2pnp/model/config.py` | `CC_G2PnPConfig` dataclass + `__post_init__` validation + `use_flash_attention` (default=False, `--use-flash-attention` で有効化), `use_groupnorm` (default=True) フラグ |
 | `cc_g2pnp/model/embedding.py` | `TokenEmbedding` — Embedding(65000,512) → sqrt(d_model) scale → dropout → expand+contiguous ×8 |
 | `cc_g2pnp/model/positional_encoding.py` | `RelativePositionalEncoding` — sinusoidal PE buffer, max_len=5000 |
 | `cc_g2pnp/model/attention.py` | `ChunkAwareAttention` + `create_chunk_mask` + `create_mla_mask` (vectorized) — Shaw et al. relative pos bias + `_forward_sdpa` (全系列SDPA、**デフォルト**) + `_forward_chunk_sdpa` (チャンク分割SDPA、参照実装) + `_forward_triton` (推論専用 Triton RPE kernel) + `forward_streaming` (SDPA パス追加済み) |

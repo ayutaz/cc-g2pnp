@@ -40,7 +40,7 @@
 | max_input_len | 128 BPE トークン |
 | max_tokens_per_batch | 1,024 |
 | Gradient checkpointing | 有効 |
-| SDPA | OFF (100K 訓練時) → ON 推奨 (デフォルト有効, 3.5x 高速化, `--use-flash-attention` 指定不要) |
+| SDPA | OFF (100K 訓練時) → ON 推奨 (3.5x 高速化, `--use-flash-attention` で有効化) |
 | データセット | ReazonSpeech "all" (HuggingFace streaming) |
 | 訓練ステップ | 100,000 / 1,200,000 (8.3%) |
 | 所要時間 | 97 時間 29 分 |
@@ -244,7 +244,7 @@ print(" ".join(tokens))
 
 | 優先度 | アクション | 期待効果 | 状態 |
 |--------|----------|---------|------|
-| **P0** | SDPA 有効化 (デフォルト有効, `--use-flash-attention` 指定不要) | 訓練 3.5x 高速化 | **✅ 実装済み** |
+| **P0** | SDPA 有効化 (`--use-flash-attention` で有効化) | 訓練 3.5x 高速化 | **✅ 実装済み** |
 | **P0** | LMDB キャッシュ事前生成 (`scripts/preprocess_pnp.py`) | GPU 利用率大幅改善 | **✅ 実装済み** |
 | **P0** | 1.2M ステップまで訓練継続 | 最大のギャップ要因を解消 | T4×4 で 2-5 日 |
 | **P0** | dataset="all" に変更 | データ多様性確保 | デフォルト設定 |
@@ -255,8 +255,8 @@ print(" ".join(tokens))
 > ```bash
 > uv run python scripts/train.py \
 >   --lmdb-cache-dir /path/to/lmdb_cache \
->   --dataset-subset all
+>   --dataset-subset all \
+>   --use-flash-attention
 > ```
-> (`--use-flash-attention` は不要 — デフォルト有効)
 
 詳細な論文再現性調査は [CC-G2PnP_論文再現性調査.md](CC-G2PnP_論文再現性調査.md) を参照。

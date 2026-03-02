@@ -65,7 +65,7 @@ LLM → BPEトークンID [B, T]
 2. **Multi-Head Self-Attention** (chunk-aware streaming mask)
    - 相対的正弦位置エンコーディング（Transformer-XLスタイル）※論文未記載。Conformer原論文(Gulati et al.)の標準に準拠
    - **Shaw-style PE の SDPA 対応**: `use_flash_attention=True` 時、pos_bias（位置エンコーディングによる注意重みバイアス）を `attn_mask` として `F.scaled_dot_product_attention` に渡す方式で Phase 1 実装済み。全系列 SDPA (`_forward_sdpa`) と推論時チャンク分割 SDPA (`_forward_chunk_sdpa`) の両パスで対応
-   - **Triton RPE fused kernel**: `use_flash_attention=True`（デフォルト）時、推論では Triton RPE fused kernel (`_forward_triton`) で Q@K^T + Q@pos_K^T を融合して計算。訓練では backward が遅いため全系列 SDPA (`_forward_sdpa`) を使用
+   - **Triton RPE fused kernel**: `use_flash_attention=True`（`--use-flash-attention` で有効化）時、推論では Triton RPE fused kernel (`_forward_triton`) で Q@K^T + Q@pos_K^T を融合して計算。訓練では backward が遅いため全系列 SDPA (`_forward_sdpa`) を使用
    - 出力: `x + Dropout(MHSA(x))`
 
 3. **Convolution Module** (causal depthwise conv)
@@ -446,7 +446,7 @@ CC-G2PnP論文のPnP系列生成の参考実装として有用。
 - ストリーミング推論: Conv cache + KV cache + MLA look-ahead (**torch.inference_mode()使用 Phase 0最適化**)
 - 評価パイプライン: 6メトリクス (`jiwer.wer` ベース) + 4ドメインビルトインデータ + batch/streaming推論 + **torch.compile オプション (`use_compile` フラグ, +30-50% 推論高速化) Phase 2最適化** + FP16 autocast（CUDA時）+ 長さソートバッチング
 - データパイプライン: **ネットワークエラーリトライロジック実装済み** (exponential backoff) + **PnP ラベル LMDB キャッシュ (`PnPLabelCache`) Phase 2最適化** → GPU利用率を大幅改善 + **sorted dynamic batching** (`collator.py` の `sorted_dynamic_batch_sampler`) + **ローカルデータセット対応** (`download_text.py` でテキストローカル保存)
-- アテンション: `use_flash_attention=True`（デフォルト有効）で **全系列 SDPA (`_forward_sdpa`)** → 単一 SDPA 呼び出しで T4 訓練 3.5x 高速化 (290ms vs 1028ms/step)。推論では **Triton RPE fused kernel (`triton_attention.py`)** で Q@K^T + Q@pos_K^T を融合。`_forward_chunk_sdpa` は参照実装として保持
+- アテンション: `use_flash_attention=True`（`--use-flash-attention` で有効化）で **全系列 SDPA (`_forward_sdpa`)** → 単一 SDPA 呼び出しで T4 訓練 3.5x 高速化 (290ms vs 1028ms/step)。推論では **Triton RPE fused kernel (`triton_attention.py`)** で Q@K^T + Q@pos_K^T を融合。`_forward_chunk_sdpa` は参照実装として保持
 - 訓練高速化 (P0+P1): **torch.compile (訓練)** — FFN+ConvModule 個別 compile (`reduce-overhead` モード); **foreach grad clipping** — 勾配クリッピング高速化; **intermediate CTC conditional skip** — `disable_intermediate_ctc_after` で後半ステップ省略; **gradient checkpointing** — `gradient_checkpointing` フラグで制御
 - 外部フレームワークへの依存なし（PyTorch標準のみ）、論文仕様を忠実に再現
 - 688テスト PASS、ruff clean (FlashAttention SDPA + Phase 2最適化 + P0+P1+Triton訓練高速化テスト含む)
