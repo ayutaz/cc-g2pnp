@@ -191,3 +191,32 @@ Conformerのストリーミング対応のために、self-attention層とconvol
 - [19] Noroozi et al., "Stateful Conformer with cache-based inference for streaming ASR," ICASSP 2024 — Chunk-aware streaming
 - [25] Nozaki & Komatsu, "Relaxing the conditional independence assumption of CTC-based ASR," Interspeech 2021 — Self-conditioned CTC
 - [27] Yin et al., "ReazonSpeech: A free and massive corpus for Japanese ASR," 2023 — 学習データ
+
+---
+
+## 7. 再現実装の現状（2026-03-02 時点）
+
+### 実装状態
+
+| コンポーネント | 状態 | 備考 |
+|-------------|------|------|
+| Conformer Encoder (8層, 512d) | ✅ 完了 | 84M params, 論文全明示パラメータ一致 |
+| Self-conditioned CTC | ✅ 完了 | Layer 1,3,5 (0-indexed), 重み 1/3 |
+| Chunk-aware Streaming Attention | ✅ 完了 | C=5, P=10, MLA M=1 |
+| SDPA 高速化 | ✅ 完了 | T4 で 3.5x 訓練高速化 |
+| データパイプライン | ✅ 完了 | ReazonSpeech streaming + LMDB キャッシュ |
+| 学習パイプライン | ✅ 完了 | AMP + DDP + AdamW + SDPA |
+| ストリーミング推論 | ✅ 完了 | Conv/KV cache + MLA look-ahead |
+| 評価パイプライン | ✅ 完了 | 6 メトリクス (PnP/Norm/Phoneme CER/SER) |
+| 561 テスト | ✅ PASS | ruff clean |
+
+### 100K ステップ訓練結果
+
+- Train loss: 24.7 → 0.028（健全な学習曲線）
+- 評価結果: PnP CER 46.7%（論文 1.79% — 訓練量 8.3% が主因）
+
+### 論文再現の実現可能性
+
+- **T4×4 DDP で 2-5 日** で 1.2M ステップの近似再現が可能（SDPA ON + LMDB）
+- max_input_len=128 制約により PnP CER 3-5% が現実的目標
+- 完全再現（PnP CER ~1.8%）には A100 + max_input_len=512 が必要

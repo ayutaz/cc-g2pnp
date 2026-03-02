@@ -257,10 +257,14 @@ FA 未導入の現状で T4 (15 GB) で安定動作する推奨設定:
 
 ## 10. 段階的移行計画
 
-> **実装状態メモ (2026-02-28 時点)**
+> **実装状態メモ (2026-03-02 時点)**
 >
-> - **Phase 1 実装済み** — `config.py` に `use_flash_attention: bool = False` フラグを追加し、`attention.py` に `_forward_sdpa()` を実装。`forward()` がフラグに基づいて SDPA dispatch を行う。チェックポイント互換 (重み形状変更なし)
-> - **Phase 2 実装済み** — `attention.py` に `_forward_chunk_sdpa()` を追加。チャンク単位分割処理により O(T^2) → O(T × C) メモリ削減を実現。チェックポイント互換 (重み形状変更なし)
+> - **Phase 1 実装済み** ✅ — `config.py` に `use_flash_attention: bool = False` フラグを追加し、`attention.py` に `_forward_sdpa()` を実装。`forward()` がフラグに基づいて SDPA dispatch を行う。チェックポイント互換 (重み形状変更なし)
+> - **Phase 2 実装済み** ✅ — `attention.py` に `_forward_chunk_sdpa()` を追加。チャンク単位分割処理により O(T^2) → O(T × C) メモリ削減を実現。チェックポイント互換 (重み形状変更なし)。**ただし T4 で 3-7x 遅いことが判明** (Python ループで 205 chunks × 8 layers = 1640 回の SDPA 呼び出しが必要)
+> - **SDPA 速度修正済み** ✅ — ディスパッチを `_forward_chunk_sdpa`（1640 回 SDPA 呼び出し、3-7x 遅い）から `_forward_sdpa`（単一 SDPA 呼び出し、3.5x 高速）に変更。全系列 SDPA がデフォルトに。`_forward_chunk_sdpa` はコードに残るが `forward()` からは呼ばれない（将来の flex_attention 移行時の参照用）
+> - **CLI に `--use-flash-attention` 引数追加** ✅ — コマンドラインから SDPA を有効化可能
+> - **`forward_streaming` に SDPA パス追加** ✅ — ストリーミング推論でも SDPA 対応
+> - **チェックポイント復元時の model_config 不一致警告追加** ✅ — 安全性強化
 > - **別施策の Phase 0/1/2 最適化は完了済み** — fused AdamW・勾配 clip・LMDB キャッシュ・GroupNorm 等 (FlashAttention 導入とは独立した施策として実施済み)
 > - **Phase 3 が次の実装対象** (RoPE 移行による FlashAttention フル互換化)
 
@@ -287,7 +291,7 @@ out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=dro
 - **期待効果**: EFFICIENT_ATTENTION kernel で ~10-20% 速度改善
 - **チェックポイント互換性**: 完全互換 (重み形状変更なし)
 
-### Phase 2: チャンク分割処理 (工数: 中) — **✅ 実装済み**
+### Phase 2: チャンク分割処理 (工数: 中) — **✅ 実装済み → 速度修正済み**
 
 **目的**: O(T^2) → O(T × C) メモリ削減
 
@@ -296,6 +300,8 @@ out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=dro
 - 各チャンク: Q=[B,H,C,d_k], K/V=[B,H,C+P,d_k] → FA `is_causal=False` 適用可能
 - ~34 倍メモリ削減
 - チェックポイント互換 (重み形状変更なし)
+
+> **注意 (2026-03-02 判明)**: `_forward_chunk_sdpa()` は Python for ループで 205 chunks × 8 layers = **1640 回の SDPA 呼び出し**が必要なため、T4 実測で **3-7x 速度低下**することが判明。`forward()` からのディスパッチ先は `_forward_sdpa()`（全系列単一 SDPA）に変更済み。`_forward_chunk_sdpa()` はコードに残るが現在は `forward()` から呼ばれない（将来の FlexAttention 移行時の参照実装として保持）。
 
 ### Phase 3: RoPE 移行 (工数: 大, 3-5 日) ← **次の実装対象**
 
@@ -353,14 +359,14 @@ EFFICIENT_ATTENTION は内部で softmax を FP32 にアップキャストする
 # config.py フラグで即時切り替え
 use_flash_attention: bool = False  # デフォルト off
 
-# attention.py (Phase 2 実装後の実際のディスパッチ)
+# 最新のディスパッチ (SDPA 速度修正後)
 def forward(self, x, pos_enc, mask=None):
     if self.use_flash_attention:
-        return self._forward_chunk_sdpa(x, pos_enc, mask)  # Phase 2: チャンク分割 SDPA
+        return self._forward_sdpa(x, pos_enc, mask)  # 全系列SDPA (デフォルト, 高速)
     return self._forward_manual(x, pos_enc, mask)  # 旧実装保持
 ```
 
-> **注**: Phase 1 では `_forward_sdpa()` が追加されたが、Phase 2 完了後は `forward()` のディスパッチ先が `_forward_chunk_sdpa()` に更新された。`_forward_sdpa()` は参照実装として保持されている。
+> **注**: SDPA 速度修正 (2026-03-02) により `forward()` のディスパッチ先を `_forward_chunk_sdpa()` から `_forward_sdpa()` に変更。`_forward_chunk_sdpa()` はコードに残るが `forward()` からは呼ばれない（FlexAttention 移行時の参照用）。
 
 ### 11.4 テスト影響
 
@@ -379,7 +385,8 @@ def forward(self, x, pos_enc, mask=None):
 | 優先度 | アクション | 効果 | 工数 | 再訓練 |
 |--------|----------|------|------|--------|
 | **P0** | ✅ Phase 1: SDPA 基本対応 | ~10-20% 速度改善 | 1-2 日 | 不要 |
-| **P1** | ✅ Phase 2: チャンク分割 | ~34x Attention メモリ削減 | 2-3 日 | 不要 |
+| **P1** | ✅ Phase 2: チャンク分割 | ~34x Attention メモリ削減 (ただし T4 で 3-7x 速度低下) | 2-3 日 | 不要 |
+| **P1.5** | ✅ SDPA 速度修正 | 訓練 3.5x 高速化 (全系列 SDPA デフォルト化) | - | 不要 |
 | **P2** | Phase 3: RoPE 移行 | FA フル互換 + O(T) メモリ | 3-5 日 | **必要** |
 | **P3** | Phase 4: FlexAttention | 再訓練不要で最高効率 | 1-2 日 | 不要 |
 
@@ -393,7 +400,42 @@ def forward(self, x, pos_enc, mask=None):
 
 ---
 
-## 13. 調査エージェント一覧
+## 13. T4 GPU 実測ベンチマーク結果
+
+> **計測日**: 2026-03-02
+> **GPU**: NVIDIA T4 (sm75, 15 GB VRAM)
+> **環境**: CUDA 12.8, PyTorch, AMP (float16)
+
+### 13.1 Attention のみの速度比較
+
+| 実装 | 相対速度 | 備考 |
+|------|---------|------|
+| `_forward_sdpa` (全系列 SDPA) | **0.75–0.88x** (高速) | 単一 SDPA 呼び出し、EFFICIENT_ATTENTION 使用 |
+| `_forward_manual` (手動 Attention) | baseline (1.0x) | 旧実装 |
+| `_forward_chunk_sdpa` (チャンク分割) | **5–8x 遅い** | Python ループで 1640 回 SDPA 呼び出し |
+
+`_forward_chunk_sdpa` の遅さの原因: デフォルト設定 (chunk_size=5, past_context=10, T≈1024) で約 205 chunks × 8 layers = **1640 回** の Python→CUDA ディスパッチが必要。カーネル起動オーバーヘッドが支配的。
+
+### 13.2 Full training step 比較
+
+| 設定 | ステップ時間 | 備考 |
+|------|------------|------|
+| SDPA OFF (`use_flash_attention=False`) | **1028 ms** | 旧 manual Attention |
+| SDPA ON (`use_flash_attention=True`) | **290 ms** | `_forward_sdpa` 使用 |
+| **改善率** | **3.5x 高速化** | |
+
+### 13.3 メモリ使用量比較
+
+| 設定 | VRAM 使用量 | 差分 |
+|------|-----------|------|
+| SDPA OFF | baseline | - |
+| SDPA ON | baseline − **0.32 GB** | EFFICIENT_ATTENTION の省メモリ効果 |
+
+> **注**: 現状 (Phase 1 + SDPA 速度修正) では pos_bias が依然 O(T^2) のため、メモリ削減効果は限定的。O(T^2) を完全排除するには Phase 3 (RoPE 移行) または Phase 4 (FlexAttention) が必要。
+
+---
+
+## 14. 調査エージェント一覧
 
 | # | 担当 | エージェント | 状態 |
 |---|------|-----------|------|

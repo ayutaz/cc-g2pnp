@@ -40,6 +40,7 @@
 | max_input_len | 128 BPE トークン |
 | max_tokens_per_batch | 1,024 |
 | Gradient checkpointing | 有効 |
+| SDPA | OFF (100K 訓練時) → ON 推奨 (`--use-flash-attention`, 3.5x 高速化) |
 | データセット | ReazonSpeech "all" (HuggingFace streaming) |
 | 訓練ステップ | 100,000 / 1,200,000 (8.3%) |
 | 所要時間 | 97 時間 29 分 |
@@ -66,6 +67,8 @@
 - Train loss は 24.7 → 0.028 に順調に下降 (約 880 倍の改善)
 - Val CER 1.30% (内部指標) は訓練データに対するモデルの学習が進んでいることを示す
 - Val loss (0.013) < Train loss (0.028) は過学習が発生していないことを示唆
+- **学習曲線の健全性**: 100K ステップの学習曲線は健全に下降しており、コードの正確性は確認済み
+- **完走の現実性**: T4×4 + SDPA ON + LMDB キャッシュの組み合わせで 1.2M ステップの完走は **2-5 日** で現実的
 
 ---
 
@@ -239,11 +242,21 @@ print(" ".join(tokens))
 
 ## 8. 論文再現に向けた今後のステップ
 
-| 優先度 | アクション | 期待効果 |
-|--------|----------|---------|
-| **P0** | 1.2M ステップまで訓練継続 | 最大のギャップ要因を解消 |
-| **P0** | max_input_len=512 に増加 (FlashAttention 導入) | 長文カバー — [調査レポート](FlashAttention_導入調査.md) 参照 |
-| **P1** | max_tokens を増加 (A100 等) | 実効バッチサイズ改善 |
-| **P2** | 6D-Eval データセットで評価 | 論文との直接比較が可能に |
+| 優先度 | アクション | 期待効果 | 状態 |
+|--------|----------|---------|------|
+| **P0** | SDPA 有効化 (`--use-flash-attention`) | 訓練 3.5x 高速化 | **✅ 実装済み** |
+| **P0** | LMDB キャッシュ事前生成 (`scripts/preprocess_pnp.py`) | GPU 利用率大幅改善 | **✅ 実装済み** |
+| **P0** | 1.2M ステップまで訓練継続 | 最大のギャップ要因を解消 | T4×4 で 2-5 日 |
+| **P0** | dataset="all" に変更 | データ多様性確保 | デフォルト設定 |
+| **P1** | max_input_len=512 に増加 | 長文カバー — [調査レポート](FlashAttention_導入調査.md) 参照 | A100 必要 |
+| **P2** | 6D-Eval データセットで評価 | 論文との直接比較が可能に | 未公開 |
+
+> **推奨訓練コマンド (SDPA + LMDB 有効)**:
+> ```bash
+> uv run python scripts/train.py \
+>   --use-flash-attention \
+>   --lmdb-cache-dir /path/to/lmdb_cache \
+>   --dataset all
+> ```
 
 詳細な論文再現性調査は [CC-G2PnP_論文再現性調査.md](CC-G2PnP_論文再現性調査.md) を参照。

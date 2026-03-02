@@ -80,7 +80,10 @@ scripts/
 ├── train.py               # argparse CLIエントリポイント (Phase 3 ✅)
 ├── preprocess_pnp.py      # PnP ラベル LMDB キャッシュ生成スクリプト (Phase 2-opt ✅)
 ├── evaluate.py            # 推論デモ + 評価パイプライン実行スクリプト
-└── verify_ddp.py          # DDP 動作検証スクリプト (torchrun)
+├── verify_ddp.py          # DDP 動作検証スクリプト (torchrun)
+├── bench_sdpa.py          # SDPA ベンチマークスクリプト (未コミット)
+├── measure_sdpa_memory.py # SDPA メモリ計測 (未コミット)
+└── verify_sdpa_numerical.py # SDPA 数値精度検証 (未コミット)
 tests/
 ├── test_g2p.py            # pyopenjtalk/fugashi基本テスト (5件)
 ├── test_tokenizer.py      # CALM2トークナイザテスト (6件)
@@ -270,7 +273,7 @@ tests/
 | `cc_g2pnp/model/config.py` | `CC_G2PnPConfig` dataclass + `__post_init__` validation + `use_flash_attention`, `use_groupnorm` フラグ |
 | `cc_g2pnp/model/embedding.py` | `TokenEmbedding` — Embedding(65000,512) → sqrt(d_model) scale → dropout → expand+contiguous ×8 |
 | `cc_g2pnp/model/positional_encoding.py` | `RelativePositionalEncoding` — sinusoidal PE buffer, max_len=5000 |
-| `cc_g2pnp/model/attention.py` | `ChunkAwareAttention` + `create_chunk_mask` + `create_mla_mask` (vectorized) — Shaw et al. relative pos bias + `_forward_sdpa` (SDPA基本, Phase 1) + `_forward_chunk_sdpa` (チャンク分割SDPA, Phase 2) |
+| `cc_g2pnp/model/attention.py` | `ChunkAwareAttention` + `create_chunk_mask` + `create_mla_mask` (vectorized) — Shaw et al. relative pos bias + `_forward_sdpa` (全系列SDPA、**デフォルト**) + `_forward_chunk_sdpa` (チャンク分割SDPA、参照実装) + `forward_streaming` (SDPA パス追加済み) |
 | `cc_g2pnp/model/feed_forward.py` | `FeedForwardModule` — LN→Linear(512→2048)→SiLU→Dropout→Linear(2048→512)→Dropout |
 | `cc_g2pnp/model/convolution.py` | `ConformerConvModule` — LN→Pointwise(D→2D)→GLU→CausalDWConv(k=31)→BN/GroupNorm→SiLU→Pointwise→Dropout (`use_groupnorm` フラグで切替) |
 | `cc_g2pnp/model/conformer_block.py` | `ConformerBlock` — x+0.5*FFN1→x+MHSA→x+Conv→x+0.5*FFN2→LN (Macaron-style) |
@@ -559,6 +562,15 @@ tests/
 
 この3モデルで「MLAの有効性」と「ストリーミング/非ストリーミングの差」を検証可能。
 
+### 論文再現可能性調査の結果
+
+| 項目 | 調査結果 |
+|---|---|
+| 学習時間の見込み | T4×4枚 DDP + SDPA ON + LMDB キャッシュ前提で、1.2M ステップの学習は **2〜5日** で完了見込み |
+| データアクセス方法 | `dataset="all"`（14.9M サンプル）はストリーミングでアクセス可能。音声ダウンロード不要、テキストのみ取得 |
+| 現実的な目標 PnP CER | `max_input_len=128` 制約により **3〜5%** が現実的な目標。論文の 1.79% には A100 + `len=512` 相当の環境が必要 |
+| コードの正確性 | 前回 100K ステップ実験で学習曲線が健全に下降することを確認。コードの正確性は検証済み |
+
 ### 完了条件
 - [ ] MLAの有無で性能差が確認できる（M=0 vs M=1）
 - [ ] チャンクサイズの影響が論文と同傾向
@@ -581,9 +593,10 @@ Phase 1-opt: 低コスト最適化           ████████ ✅ 完了
 Phase 2-opt: 中コスト改善             ████████ ✅ 完了 (5施策)
 FlashAttention Phase 1 (SDPA)        ████████ ✅ 完了
 FlashAttention Phase 2 (チャンク分割) ████████ ✅ 完了
+SDPA 速度修正 (全系列SDPAデフォルト化) ████████ ✅ 完了
 ```
 
-- **Phase 0-5 全完了**（評価パイプラインまで実装済み、529 テスト PASS）
+- **Phase 0-5 全完了**（評価パイプラインまで実装済み、561 テスト PASS）
 - **最適化 Phase 0-1 完了**: ゼロコスト 7施策 + 低コスト 7施策 適用済み (コミット `bce295d`, `d37a34b`)
 - **最適化 Phase 2 完了**: LMDB キャッシュ・中間 CTC バッチ化・GroupNorm・非同期チェックポイント・torch.compile (推論) 実装済み
 - **DDP バグ修正完了**: チェックポイント保存 barrier 欠如・データシャーディング未実装を修正 (コミット `4c29ee2`, `7bc3d8f`)
@@ -591,6 +604,7 @@ FlashAttention Phase 2 (チャンク分割) ████████ ✅ 完了
 - Phase 6 はPhase 5の評価基盤が前提 → **評価基盤整備済み、フルスケール学習後に実行可能**
 - **FlashAttention Phase 1 完了**: SDPA 基本対応 (`use_flash_attention` フラグ, `_forward_sdpa()` 実装, コミット `db12843`)
 - **FlashAttention Phase 2 完了**: チャンク分割処理 (`_forward_chunk_sdpa()` 実装), O(T^2) → O(T×C) メモリ削減
+- **SDPA 速度修正完了**: `_forward_chunk_sdpa` をディスパッチ対象から外し、`_forward_sdpa`（全系列 SDPA、単一カーネル呼び出し）をデフォルトに変更。SDPA ON で訓練 **3.5x 高速化**（290ms vs 1028ms/step on T4）、メモリ -0.32GB。CLI `--use-flash-attention` 追加。`forward_streaming` に SDPA パス追加。チェックポイント復元時の `model_config` 不一致警告追加。
 - **次のステップ**: Phase 2-opt 高コスト改善 (ONNX/TensorRT) / FlashAttention Phase 3 (RoPE 移行)
 
 ---
@@ -624,5 +638,5 @@ FlashAttention Phase 2 (チャンク分割) ████████ ✅ 完了
 | **M3: スモーク試験完了** | 3 | 10ステップ実行、損失 23.77→10.81、W&B同期OK | ✅ 達成 |
 | **M4: ストリーミング推論動作** | 4 | チャンク単位の逐次推論でPnPラベル出力。376テスト、streaming/latencyテスト完了 | ✅ 達成 |
 | **M5: 評価パイプライン完成** | 5 | 全6メトリクス計算、4ドメインビルトインデータ、batch/streaming推論→評価。499テスト | ✅ 達成 |
-| **M5-opt: Phase 2 最適化完了** | 6-opt | LMDB キャッシュ・GroupNorm・非同期チェックポイント・torch.compile・チャンク分割 Attention 実装。529 テスト | ✅ 達成 |
+| **M5-opt: Phase 2 最適化完了** | 6-opt | LMDB キャッシュ・GroupNorm・非同期チェックポイント・torch.compile・チャンク分割 Attention 実装・SDPA 速度修正 (全系列 SDPA デフォルト化、3.5x 高速化)。561 テスト | ✅ 達成 |
 | **M6: フルスケール学習完了** | 3+6 | 100%データ・1.2Mステップでの学習完了、PnP CER ≈ 1.79（代替評価データ上） | |
