@@ -22,6 +22,13 @@
 - **GroupNorm オプション** — DDP 通信削減と fp16 安定性向上 (`use_groupnorm` フラグで切替)
 - **非同期チェックポイント保存** — 保存スパイクを排除 (`async_checkpoint` フラグで切替)
 - **長さソートバッチング** — 評価時にパディング量を削減するシーケンス長ソート
+- **Triton RPE カーネル** — 推論時の Q@K^T + Q@pos_K^T 融合カーネル (`triton_attention.py`)
+- **sorted dynamic batching (訓練)** — バッファリング+長さソートでパディング量を5-15%に削減
+- **torch.compile (訓練)** — FFN+ConvModule 個別 compile (`reduce-overhead` モード)
+- **foreach grad clipping** — 勾配クリッピング高速化
+- **Intermediate CTC 条件付きスキップ** — `disable_intermediate_ctc_after` で後半ステップの中間CTC省略
+- **Gradient checkpointing 制御** — `gradient_checkpointing` フラグで有効/無効切替
+- **ローカルデータセット対応** — `scripts/download_text.py` でテキストをParquet/TSVローカル保存
 - **W&B ロギング** — 学習メトリクスの自動記録・可視化
 - **6 種メトリクス評価** — PnP CER/SER、Normalized PnP CER/SER、Phoneme CER/SER
 
@@ -49,6 +56,7 @@ cc_g2pnp/
 │   ├── feed_forward.py     #   FeedForwardModule
 │   ├── embedding.py        #   TokenEmbedding
 │   ├── positional_encoding.py  # RelativePositionalEncoding
+│   ├── triton_attention.py  #   Triton fused RPE attention kernel
 │   └── ctc_decoder.py      #   CTCHead + greedy_decode
 ├── training/               # 学習ループ
 │   ├── config.py           #   TrainingConfig
@@ -70,7 +78,17 @@ scripts/
 ├── train.py                # 学習スクリプト (cli.py のエイリアス)
 ├── evaluate.py             # 評価スクリプト
 ├── preprocess_pnp.py       # PnP ラベル事前キャッシュ生成スクリプト
-└── verify_ddp.py           # DDP 設定検証スクリプト
+├── verify_ddp.py           # DDP 設定検証スクリプト
+├── bench_sdpa.py           # SDPA ベンチマーク
+├── measure_sdpa_memory.py  # SDPA メモリ計測
+├── profile_training.py     # 学習プロファイリング
+├── profile_pyopenjtalk.py  # pyopenjtalk プロファイリング
+├── verify_sdpa_numerical.py # SDPA 数値検証
+└── download_text.py        # テキストデータ Parquet/TSV ローカル保存
+tests/
+├── test_triton_attention.py  # Triton RPE カーネルテスト
+├── test_sorted_batching.py   # ソート動的バッチングテスト
+└── test_local_dataset.py     # ローカルデータセットテスト
 ```
 
 ## セットアップ
@@ -124,23 +142,31 @@ torchrun --nproc_per_node=N -m cc_g2pnp.cli --ddp
 | `--project-name` | `cc-g2pnp` | W&B プロジェクト名 |
 | `--run-name` | - | W&B ラン名 |
 | `--no-amp` | - | AMP を無効化 |
-| `--amp-dtype` | `bfloat16` | AMP データ型 (`float16` / `bfloat16`) |
+| `--amp-dtype` | `float16` | AMP データ型 (`float16` / `bfloat16`) |
 | `--ddp` | - | DDP 分散学習を有効化 |
 | `--seed` | `42` | ランダムシード |
-| `--max-input-len` | `512` | サンプルあたり最大 BPE トークン長 (T4: `128` 推奨) |
-| `--num-workers` | `4` | DataLoader ワーカー数 |
+| `--max-input-len` | `64` | サンプルあたり最大 BPE トークン長 (T4: `128` 推奨) |
+| `--num-workers` | `8` | DataLoader ワーカー数 |
 | `--prefetch-count` | `4` | バックグラウンドでプリフェッチするバッチ数 |
 | `--lmdb-cache-dir` | - | PnP ラベル LMDB キャッシュディレクトリ (`scripts/preprocess_pnp.py` で事前生成) |
 | `--no-async-checkpoint` | - | 非同期チェックポイント保存を無効化 |
+| `--use-flash-attention` | 有効 | SDPA 有効化 (デフォルト有効) |
+| `--use-torch-compile` | - | FFN+ConvModule を torch.compile で最適化 |
+| `--no-gradient-checkpointing` | - | Gradient checkpointing を無効化 |
+| `--sort-batch-buffer` | - | sorted dynamic batching のバッファサイズ |
+| `--disable-intermediate-ctc-after` | - | 指定ステップ以降の中間CTC計算を省略 |
+| `--local-dataset-dir` | - | ローカルデータセットディレクトリ (Parquet/TSV) |
+| `--scheduler-type` | - | 学習率スケジューラの種類 |
+| `--gradient-accumulation-steps` | - | 勾配累積ステップ数 |
+| `--pretrained-weights-only` | - | 事前学習重みのみロード (学習状態除外) |
 
 ### T4 GPU での学習
 
-T4 (15GB, compute capability 7.5) は bfloat16 テンソルコアを持たないため、`float16` AMP を使用してください。
+T4 (15GB, compute capability 7.5) は bfloat16 テンソルコアを持たないため、`--amp-dtype float16` を使用してください (デフォルト)。
 デフォルトの `--max-tokens 8192` では OOM になるため、以下の設定を推奨します:
 
 ```bash
 torchrun --nproc_per_node=4 scripts/train.py --ddp \
-    --amp-dtype float16 \
     --max-tokens 4096 --max-input-len 128
 ```
 
@@ -193,7 +219,7 @@ print(pipeline.format_results(result))
 ## テスト
 
 ```bash
-# 全テスト実行 (529 件)
+# 全テスト実行 (688 件)
 uv run pytest
 
 # lint チェック

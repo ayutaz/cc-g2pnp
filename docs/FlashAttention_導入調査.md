@@ -266,6 +266,9 @@ FA 未導入の現状で T4 (15 GB) で安定動作する推奨設定:
 > - **`forward_streaming` に SDPA パス追加** ✅ — ストリーミング推論でも SDPA 対応
 > - **チェックポイント復元時の model_config 不一致警告追加** ✅ — 安全性強化
 > - **別施策の Phase 0/1/2 最適化は完了済み** — fused AdamW・勾配 clip・LMDB キャッシュ・GroupNorm 等 (FlashAttention 導入とは独立した施策として実施済み)
+> - **P0+P1+Triton 訓練高速化実装済み** ✅ — `triton_attention.py` に Triton RPE fused kernel を実装。Forward は Triton カーネルで Q@K^T + Q@pos_K^T を融合、Backward は autograd remat (float32)。**訓練時は Triton backward が 37.9% 遅いため、`not self.training` 条件で SDPA にフォールバック**。推論時のみ Triton dispatch。
+> - **`use_flash_attention` デフォルト True に変更** ✅ — 全モデルで SDPA がデフォルト有効
+> - **テスト数: 688 件** (P0+P1+Triton テスト含む)
 > - **Phase 3 が次の実装対象** (RoPE 移行による FlashAttention フル互換化)
 
 ### Phase 1: SDPA 基本対応 (工数: 小, 1-2 日) — **✅ 実装済み**
@@ -359,11 +362,13 @@ EFFICIENT_ATTENTION は内部で softmax を FP32 にアップキャストする
 # config.py フラグで即時切り替え
 use_flash_attention: bool = False  # デフォルト off
 
-# 最新のディスパッチ (SDPA 速度修正後)
+# 最新のディスパッチ (P0+P1+Triton 実装後)
 def forward(self, x, pos_enc, mask=None):
+    if HAS_TRITON and not self.training and t <= 1024 and x.is_cuda:
+        return self._forward_triton(x, pos_enc, mask)  # 推論専用 Triton kernel
     if self.use_flash_attention:
-        return self._forward_sdpa(x, pos_enc, mask)  # 全系列SDPA (デフォルト, 高速)
-    return self._forward_manual(x, pos_enc, mask)  # 旧実装保持
+        return self._forward_sdpa(x, pos_enc, mask)    # 訓練 + 推論 SDPA (デフォルト)
+    return self._forward_manual(x, pos_enc, mask)      # 旧実装保持
 ```
 
 > **注**: SDPA 速度修正 (2026-03-02) により `forward()` のディスパッチ先を `_forward_chunk_sdpa()` から `_forward_sdpa()` に変更。`_forward_chunk_sdpa()` はコードに残るが `forward()` からは呼ばれない（FlexAttention 移行時の参照用）。
@@ -372,7 +377,8 @@ def forward(self, x, pos_enc, mask=None):
 
 | テストファイル | テスト数 | Phase 1-2 影響 | Phase 3 影響 |
 |-------------|---------|--------------|------------|
-| test_attention.py | 30 | 低 (形状不変) | 高 (パラメータ数変更) |
+| test_attention.py | 35 | 低 (形状不変) | 高 (パラメータ数変更) |
+| test_triton_attention.py | 12 | 低 | 中 |
 | test_conformer_block.py | 9 | 低 | 中 |
 | test_encoder.py | 12 | 低 | 中 |
 | test_inference_streaming.py | 32 | 中 | 高 |
@@ -432,6 +438,14 @@ def forward(self, x, pos_enc, mask=None):
 | SDPA ON | baseline − **0.32 GB** | EFFICIENT_ATTENTION の省メモリ効果 |
 
 > **注**: 現状 (Phase 1 + SDPA 速度修正) では pos_bias が依然 O(T^2) のため、メモリ削減効果は限定的。O(T^2) を完全排除するには Phase 3 (RoPE 移行) または Phase 4 (FlexAttention) が必要。
+
+### 13.4 P0+P1+Triton 訓練ベンチマーク (2026-03-02)
+
+| 設定 | ステップ時間 | メモリ | 備考 |
+|------|------------|--------|------|
+| Manual (`use_flash_attention=False`) | 1163.7 ms | 2.96 GB | 旧 manual Attention |
+| SDPA + P0+P1+Triton (推論のみTriton) | **991.7 ms** | **2.56 GB** | sorted batching + torch.compile + foreach grad clip |
+| **改善率** | **14.8% 高速化** | **-13.5% メモリ** | Manual 比 |
 
 ---
 

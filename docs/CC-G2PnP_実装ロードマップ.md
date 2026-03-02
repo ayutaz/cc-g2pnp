@@ -42,15 +42,16 @@ cc_g2pnp/
 │   ├── vocabulary.py      # CTC語彙定義 (PnPVocabulary)
 │   ├── pnp_labeler.py     # PnPラベル生成 (HTS→カタカナ+韻律)
 │   ├── tokenizer.py       # CALM2 BPEトークナイザラッパー
-│   ├── dataset.py         # ReazonSpeech streaming IterableDataset
-│   ├── collator.py        # Dynamic Batching + パディング
+│   ├── dataset.py         # ReazonSpeech streaming IterableDataset + ローカルデータセット対応 (local_dataset_dir)
+│   ├── collator.py        # Dynamic Batching + パディング + sorted_dynamic_batch_sampler
 │   └── lmdb_cache.py      # PnP ラベル LMDB キャッシュ
 ├── model/             # モデル定義 (Phase 2 ✅)
 │   ├── __init__.py          # 15 public exports
-│   ├── config.py            # CC_G2PnPConfig dataclass (use_flash_attention, use_groupnorm フラグ含む)
+│   ├── config.py            # CC_G2PnPConfig dataclass (use_flash_attention=True, use_groupnorm=True フラグ含む)
 │   ├── embedding.py         # TokenEmbedding (BPE → D, expand+contiguous ×8)
 │   ├── positional_encoding.py # RelativePositionalEncoding (sinusoidal)
-│   ├── attention.py         # ChunkAwareAttention + create_chunk_mask/mla_mask + forward_streaming + _forward_sdpa/_forward_chunk_sdpa (SDPA対応)
+│   ├── attention.py         # ChunkAwareAttention + create_chunk_mask/mla_mask + forward_streaming + _forward_sdpa/_forward_chunk_sdpa (SDPA対応) + _forward_triton (推論専用 Triton RPE kernel)
+│   ├── triton_attention.py  #   Triton fused RPE attention kernel (推論専用)
 │   ├── feed_forward.py      # FeedForwardModule (Macaron half-step)
 │   ├── convolution.py       # ConformerConvModule (causal depthwise conv) + forward_streaming + GroupNorm対応 (use_groupnorm)
 │   ├── conformer_block.py   # ConformerBlock (FFN→MHSA→Conv→FFN→LN) + forward_streaming
@@ -59,7 +60,7 @@ cc_g2pnp/
 │   └── cc_g2pnp.py         # CC_G2PnP (統合モデル, 84Mパラメータ) + init_streaming_state + forward_streaming
 ├── training/          # 学習ループ (Phase 3 ✅)
 │   ├── __init__.py        # 14 public exports
-│   ├── config.py           # TrainingConfig dataclass (21フィールド)
+│   ├── config.py           # TrainingConfig dataclass (~30フィールド)
 │   ├── optimizer.py        # build_optimizer + build_scheduler
 │   ├── checkpoint.py       # CheckpointManager (save/load/cleanup)
 │   ├── logger.py           # TrainingLogger (W&B必須)
@@ -81,9 +82,12 @@ scripts/
 ├── preprocess_pnp.py      # PnP ラベル LMDB キャッシュ生成スクリプト (Phase 2-opt ✅)
 ├── evaluate.py            # 推論デモ + 評価パイプライン実行スクリプト
 ├── verify_ddp.py          # DDP 動作検証スクリプト (torchrun)
-├── bench_sdpa.py          # SDPA ベンチマークスクリプト (未コミット)
-├── measure_sdpa_memory.py # SDPA メモリ計測 (未コミット)
-└── verify_sdpa_numerical.py # SDPA 数値精度検証 (未コミット)
+├── bench_sdpa.py          # SDPA ベンチマーク
+├── measure_sdpa_memory.py # SDPA メモリ計測
+├── profile_training.py    # 訓練プロファイリング
+├── profile_pyopenjtalk.py # pyopenjtalk プロファイリング
+├── verify_sdpa_numerical.py # SDPA 数値精度検証
+└── download_text.py       # テキストデータダウンロード
 tests/
 ├── test_g2p.py            # pyopenjtalk/fugashi基本テスト (5件)
 ├── test_tokenizer.py      # CALM2トークナイザテスト (6件)
@@ -114,7 +118,10 @@ tests/
 ├── test_inference_latency.py    # レイテンシ計測テスト (8件)
 ├── test_evaluation_metrics.py   # 評価メトリクステスト (30件)
 ├── test_evaluation_eval_data.py # 評価データテスト (26件)
-└── test_evaluation_pipeline.py  # 評価パイプラインテスト (14件)
+├── test_evaluation_pipeline.py  # 評価パイプラインテスト (14件)
+├── test_triton_attention.py     # Triton attention テスト (12件)
+├── test_sorted_batching.py      # sorted batching テスト (12件)
+└── test_local_dataset.py        # ローカルデータセットテスト
 ```
 
 ### 完了条件
@@ -157,7 +164,7 @@ tests/
 | `cc_g2pnp/data/pnp_labeler.py` | `generate_pnp_labels(text, *, jtalk=None)` — ttslearn pp_symbolsベース → CC-G2PnP記法に変換。`jtalk=`で外部OpenJTalkインスタンス注入可能 |
 | `cc_g2pnp/data/tokenizer.py` | `G2PnPTokenizer` — CALM2 BPE薄ラッパー |
 | `cc_g2pnp/data/dataset.py` | `G2PnPDataset(IterableDataset)` — ReazonSpeech streaming + CTC制約チェック |
-| `cc_g2pnp/data/collator.py` | `DynamicBatchCollator` + `dynamic_batch_sampler` |
+| `cc_g2pnp/data/collator.py` | `DynamicBatchCollator` + `dynamic_batch_sampler` + `sorted_dynamic_batch_sampler` |
 | `tests/test_vocabulary.py` | 語彙テスト (8件) |
 | `tests/test_pnp_labeler.py` | PnPラベル生成テスト (10件) |
 | `tests/test_pipeline.py` | 統合テスト (7件 + 1件network) |
@@ -270,10 +277,10 @@ tests/
 
 | ファイル | 概要 |
 |---------|------|
-| `cc_g2pnp/model/config.py` | `CC_G2PnPConfig` dataclass + `__post_init__` validation + `use_flash_attention`, `use_groupnorm` フラグ |
+| `cc_g2pnp/model/config.py` | `CC_G2PnPConfig` dataclass + `__post_init__` validation + `use_flash_attention` (default=True), `use_groupnorm` (default=True) フラグ |
 | `cc_g2pnp/model/embedding.py` | `TokenEmbedding` — Embedding(65000,512) → sqrt(d_model) scale → dropout → expand+contiguous ×8 |
 | `cc_g2pnp/model/positional_encoding.py` | `RelativePositionalEncoding` — sinusoidal PE buffer, max_len=5000 |
-| `cc_g2pnp/model/attention.py` | `ChunkAwareAttention` + `create_chunk_mask` + `create_mla_mask` (vectorized) — Shaw et al. relative pos bias + `_forward_sdpa` (全系列SDPA、**デフォルト**) + `_forward_chunk_sdpa` (チャンク分割SDPA、参照実装) + `forward_streaming` (SDPA パス追加済み) |
+| `cc_g2pnp/model/attention.py` | `ChunkAwareAttention` + `create_chunk_mask` + `create_mla_mask` (vectorized) — Shaw et al. relative pos bias + `_forward_sdpa` (全系列SDPA、**デフォルト**) + `_forward_chunk_sdpa` (チャンク分割SDPA、参照実装) + `_forward_triton` (推論専用 Triton RPE kernel) + `forward_streaming` (SDPA パス追加済み) |
 | `cc_g2pnp/model/feed_forward.py` | `FeedForwardModule` — LN→Linear(512→2048)→SiLU→Dropout→Linear(2048→512)→Dropout |
 | `cc_g2pnp/model/convolution.py` | `ConformerConvModule` — LN→Pointwise(D→2D)→GLU→CausalDWConv(k=31)→BN/GroupNorm→SiLU→Pointwise→Dropout (`use_groupnorm` フラグで切替) |
 | `cc_g2pnp/model/conformer_block.py` | `ConformerBlock` — x+0.5*FFN1→x+MHSA→x+Conv→x+0.5*FFN2→LN (Macaron-style) |
@@ -335,7 +342,7 @@ tests/
 
 | ファイル | 概要 |
 |---------|------|
-| `cc_g2pnp/training/config.py` | `TrainingConfig` dataclass (21フィールド) + `__post_init__` validation + `scheduler_gamma` 自動計算 |
+| `cc_g2pnp/training/config.py` | `TrainingConfig` dataclass (~30フィールド: `use_torch_compile`, `gradient_checkpointing`, `sort_batch_buffer_size`, `disable_intermediate_ctc_after`, `gradient_accumulation_steps`, `scheduler_type`, `pretrained_weights_only`, `local_dataset_dir` 等追加) + `__post_init__` validation + `scheduler_gamma` 自動計算 |
 | `cc_g2pnp/training/optimizer.py` | `build_optimizer` (AdamW, decay/no_decay分離, fused=True) + `build_scheduler` (LinearLR warmup + ExponentialLR) |
 | `cc_g2pnp/training/checkpoint.py` | `CheckpointManager` — save/load/load_latest/cleanup (keep_last_n), DDP対応, 非同期保存 (`async_checkpoint` フラグ), `model_config` キー保存 |
 | `cc_g2pnp/training/logger.py` | `TrainingLogger` — W&B必須、未ログイン時 RuntimeError、context manager |
@@ -594,9 +601,11 @@ Phase 2-opt: 中コスト改善             ████████ ✅ 完了 
 FlashAttention Phase 1 (SDPA)        ████████ ✅ 完了
 FlashAttention Phase 2 (チャンク分割) ████████ ✅ 完了
 SDPA 速度修正 (全系列SDPAデフォルト化) ████████ ✅ 完了
+P0+P1+Triton 訓練高速化        ████████ ✅ 完了 (10施策)
+ローカルデータセット対応          ████████ ✅ 完了
 ```
 
-- **Phase 0-5 全完了**（評価パイプラインまで実装済み、561 テスト PASS）
+- **Phase 0-5 全完了**（評価パイプラインまで実装済み、688 テスト PASS）
 - **最適化 Phase 0-1 完了**: ゼロコスト 7施策 + 低コスト 7施策 適用済み (コミット `bce295d`, `d37a34b`)
 - **最適化 Phase 2 完了**: LMDB キャッシュ・中間 CTC バッチ化・GroupNorm・非同期チェックポイント・torch.compile (推論) 実装済み
 - **DDP バグ修正完了**: チェックポイント保存 barrier 欠如・データシャーディング未実装を修正 (コミット `4c29ee2`, `7bc3d8f`)
@@ -605,6 +614,8 @@ SDPA 速度修正 (全系列SDPAデフォルト化) ████████ ✅
 - **FlashAttention Phase 1 完了**: SDPA 基本対応 (`use_flash_attention` フラグ, `_forward_sdpa()` 実装, コミット `db12843`)
 - **FlashAttention Phase 2 完了**: チャンク分割処理 (`_forward_chunk_sdpa()` 実装), O(T^2) → O(T×C) メモリ削減
 - **SDPA 速度修正完了**: `_forward_chunk_sdpa` をディスパッチ対象から外し、`_forward_sdpa`（全系列 SDPA、単一カーネル呼び出し）をデフォルトに変更。SDPA ON で訓練 **3.5x 高速化**（290ms vs 1028ms/step on T4）、メモリ -0.32GB。CLI `--use-flash-attention` 追加。`forward_streaming` に SDPA パス追加。チェックポイント復元時の `model_config` 不一致警告追加。
+- **P0+P1+Triton 訓練高速化完了**: sorted batching・Triton fused RPE attention kernel・gradient checkpointing・gradient accumulation 等 10施策を適用。688 テスト PASS。
+- **ローカルデータセット対応完了**: `local_dataset_dir` フラグで ReazonSpeech 代わりにローカルテキストファイルを利用可能。
 - **次のステップ**: Phase 2-opt 高コスト改善 (ONNX/TensorRT) / FlashAttention Phase 3 (RoPE 移行)
 
 ---
@@ -638,5 +649,5 @@ SDPA 速度修正 (全系列SDPAデフォルト化) ████████ ✅
 | **M3: スモーク試験完了** | 3 | 10ステップ実行、損失 23.77→10.81、W&B同期OK | ✅ 達成 |
 | **M4: ストリーミング推論動作** | 4 | チャンク単位の逐次推論でPnPラベル出力。376テスト、streaming/latencyテスト完了 | ✅ 達成 |
 | **M5: 評価パイプライン完成** | 5 | 全6メトリクス計算、4ドメインビルトインデータ、batch/streaming推論→評価。499テスト | ✅ 達成 |
-| **M5-opt: Phase 2 最適化完了** | 6-opt | LMDB キャッシュ・GroupNorm・非同期チェックポイント・torch.compile・チャンク分割 Attention 実装・SDPA 速度修正 (全系列 SDPA デフォルト化、3.5x 高速化)。561 テスト | ✅ 達成 |
+| **M5-opt: Phase 2 最適化完了** | 6-opt | LMDB キャッシュ・GroupNorm・非同期チェックポイント・torch.compile・チャンク分割 Attention 実装・SDPA 速度修正 (全系列 SDPA デフォルト化、3.5x 高速化)・P0+P1+Triton 訓練高速化 (10施策)・ローカルデータセット対応。688 テスト | ✅ 達成 |
 | **M6: フルスケール学習完了** | 3+6 | 100%データ・1.2Mステップでの学習完了、PnP CER ≈ 1.79（代替評価データ上） | |

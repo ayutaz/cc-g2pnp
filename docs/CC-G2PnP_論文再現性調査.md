@@ -204,7 +204,7 @@ T4 GPU (15GB VRAM) のメモリ制約:
 
 | 優先度 | アクション | 期待効果 |
 |--------|-----------|---------|
-| **P0** | SDPA 有効化 (`--use-flash-attention`) | 訓練 3.5x 高速化 ✅ 実装済み |
+| **P0** | SDPA (use_flash_attention はデフォルト True に変更済み) | 訓練 3.5x 高速化 ✅ 実装済み |
 | **P0** | LMDB キャッシュ事前生成 | GPU 利用率大幅改善 ✅ 実装済み |
 | **P0** | 1.2M ステップまで訓練継続 | 最大のギャップ要因を解消 |
 | **P0** | dataset="all" に変更 | データ多様性の確保 |
@@ -276,11 +276,12 @@ torchrun --nproc_per_node=4 scripts/train.py \
   --max-input-len 128 \
   --max-tokens 8192 \
   --total-steps 1200000 \
-  --use-flash-attention \
   --lmdb-cache-dir /data/pnp_cache \
   --ddp \
   --amp-dtype float16
 ```
+
+> **注**: `--use-flash-attention` は不要 (use_flash_attention はデフォルト True に変更済み)
 
 ### Go/No-Go 判定
 

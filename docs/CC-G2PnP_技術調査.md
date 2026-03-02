@@ -65,6 +65,7 @@ LLM → BPEトークンID [B, T]
 2. **Multi-Head Self-Attention** (chunk-aware streaming mask)
    - 相対的正弦位置エンコーディング（Transformer-XLスタイル）※論文未記載。Conformer原論文(Gulati et al.)の標準に準拠
    - **Shaw-style PE の SDPA 対応**: `use_flash_attention=True` 時、pos_bias（位置エンコーディングによる注意重みバイアス）を `attn_mask` として `F.scaled_dot_product_attention` に渡す方式で Phase 1 実装済み。全系列 SDPA (`_forward_sdpa`) と推論時チャンク分割 SDPA (`_forward_chunk_sdpa`) の両パスで対応
+   - **Triton RPE fused kernel**: `use_flash_attention=True`（デフォルト）時、推論では Triton RPE fused kernel (`_forward_triton`) で Q@K^T + Q@pos_K^T を融合して計算。訓練では backward が遅いため全系列 SDPA (`_forward_sdpa`) を使用
    - 出力: `x + Dropout(MHSA(x))`
 
 3. **Convolution Module** (causal depthwise conv)
@@ -434,7 +435,7 @@ CC-G2PnP論文のPnP系列生成の参考実装として有用。
 - **CC-G2PnPとの関連**: U2フレームワーク（streaming/non-streaming統一）
 - **再現実装での有用性**: 統一アーキテクチャの設計パターンの参考
 
-### 4.5 推奨方針 → 実装完了 (Phase 0-5 + FlashAttention + Phase 2最適化)
+### 4.5 推奨方針 → 実装完了 (Phase 0-5 + FlashAttention + Phase 2最適化 + P0+P1+Triton)
 
 既存フレームワークを**参考**にしつつ、**PyTorchベースでスクラッチ実装**済み:
 - NeMoからchunk-aware streamingのマスク生成パターンを参考 → `create_chunk_mask`/`create_mla_mask` (vectorized)
@@ -444,10 +445,11 @@ CC-G2PnP論文のPnP系列生成の参考実装として有用。
 - 学習パイプライン: Trainer + TrainingConfig + AdamW (decay/no_decay, **fused AdamW対応 Phase 1最適化**) + ExponentialLR + CheckpointManager (**非同期保存 `async_checkpoint` フラグ Phase 2最適化**) + DDP (**find_unused_parameters=True, static_graph最適化**) + AMP + W&B (必須)
 - ストリーミング推論: Conv cache + KV cache + MLA look-ahead (**torch.inference_mode()使用 Phase 0最適化**)
 - 評価パイプライン: 6メトリクス (`jiwer.wer` ベース) + 4ドメインビルトインデータ + batch/streaming推論 + **torch.compile オプション (`use_compile` フラグ, +30-50% 推論高速化) Phase 2最適化** + FP16 autocast（CUDA時）+ 長さソートバッチング
-- データパイプライン: **ネットワークエラーリトライロジック実装済み** (exponential backoff) + **PnP ラベル LMDB キャッシュ (`PnPLabelCache`) Phase 2最適化** → GPU利用率を大幅改善
-- アテンション: `use_flash_attention=True` で **全系列 SDPA (`_forward_sdpa`)** → 単一 SDPA 呼び出しで T4 訓練 3.5x 高速化 (290ms vs 1028ms/step)。`_forward_chunk_sdpa` は参照実装として保持
+- データパイプライン: **ネットワークエラーリトライロジック実装済み** (exponential backoff) + **PnP ラベル LMDB キャッシュ (`PnPLabelCache`) Phase 2最適化** → GPU利用率を大幅改善 + **sorted dynamic batching** (`collator.py` の `sorted_dynamic_batch_sampler`) + **ローカルデータセット対応** (`download_text.py` でテキストローカル保存)
+- アテンション: `use_flash_attention=True`（デフォルト有効）で **全系列 SDPA (`_forward_sdpa`)** → 単一 SDPA 呼び出しで T4 訓練 3.5x 高速化 (290ms vs 1028ms/step)。推論では **Triton RPE fused kernel (`triton_attention.py`)** で Q@K^T + Q@pos_K^T を融合。`_forward_chunk_sdpa` は参照実装として保持
+- 訓練高速化 (P0+P1): **torch.compile (訓練)** — FFN+ConvModule 個別 compile (`reduce-overhead` モード); **foreach grad clipping** — 勾配クリッピング高速化; **intermediate CTC conditional skip** — `disable_intermediate_ctc_after` で後半ステップ省略; **gradient checkpointing** — `gradient_checkpointing` フラグで制御
 - 外部フレームワークへの依存なし（PyTorch標準のみ）、論文仕様を忠実に再現
-- 561テスト PASS、ruff clean (FlashAttention SDPA + Phase 2最適化テスト含む)
+- 688テスト PASS、ruff clean (FlashAttention SDPA + Phase 2最適化 + P0+P1+Triton訓練高速化テスト含む)
 
 ---
 
@@ -488,7 +490,7 @@ CC-G2PnP論文のPnP系列生成の参考実装として有用。
 
 ### 5.4 論文コードの公開状況
 
-- **CC-G2PnPのコードは未公開**（2026年2月時点、提出直後のため）→ **本リポジトリで再現実装中** (Phase 5+最適化完了: モデルコア84M params + 学習パイプライン + ストリーミング推論 + 評価パイプライン + Phase 2最適化, 561テスト PASS)
+- **CC-G2PnPのコードは未公開**（2026年2月時点、提出直後のため）→ **本リポジトリで再現実装中** (Phase 5+最適化完了: モデルコア84M params + 学習パイプライン + ストリーミング推論 + 評価パイプライン + Phase 2最適化 + P0+P1+Triton訓練高速化, 688テスト PASS)
 - **Dict-DNN韻律予測モデルも未公開**（Park et al., Interspeech 2022）→ pyopenjtalk full-context label解析で代替実装済み
 - **6D-Eval評価データセットも未公開**
 - 今後r9y9のGitHubリポジトリで公開される可能性あり
