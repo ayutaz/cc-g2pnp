@@ -64,6 +64,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lmdb-cache-dir", type=str, default=None,
                         help="LMDB directory with pre-computed PnP labels")
 
+    # Local dataset
+    parser.add_argument("--local-dataset-dir", type=str, default=None,
+                        help="Local Parquet dataset directory (from download_text.py)")
+
     # Logging
     parser.add_argument("--log-every", type=int, default=100, help="Log metrics every N steps")
     parser.add_argument("--project-name", type=str, default="cc-g2pnp", help="Project name for experiment tracking")
@@ -141,6 +145,7 @@ def main() -> None:
         val_every_n_steps=args.val_every,
         seed=args.seed,
         lmdb_cache_dir=args.lmdb_cache_dir,
+        local_dataset_dir=args.local_dataset_dir,
         async_checkpoint=args.async_checkpoint,
     )
 

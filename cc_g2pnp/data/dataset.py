@@ -1,8 +1,8 @@
-"""Streaming data pipeline: ReazonSpeech → BPE tokens + PnP labels.
+"""Data pipeline: ReazonSpeech → BPE tokens + PnP labels.
 
-Loads the ReazonSpeech dataset in streaming mode (text only, no audio
-decoding), tokenizes each transcription with the CALM2 BPE tokenizer, and
-generates PnP (Pronunciation & Prosody) label sequences.
+Loads the ReazonSpeech transcription text (via TSV from corpus server,
+local Parquet, or HF streaming fallback), tokenizes each transcription
+with the CALM2 BPE tokenizer, and generates PnP label sequences.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _REAZON_DATASET = "reazon-research/reazonspeech"
+_TSV_BASE_URL = "https://corpus.reazon-research.org/reazonspeech-v2/tsv"
 _CTC_UPSAMPLE_FACTOR = 8  # Token upsampling factor (BPE → Conformer input)
 
 
@@ -49,6 +50,7 @@ class G2PnPDataset(IterableDataset):
         rank: int = 0,
         world_size: int = 1,
         lmdb_cache_dir: str | None = None,
+        local_dataset_dir: str | None = None,
     ) -> None:
         super().__init__()
         self._subset = subset
@@ -58,6 +60,7 @@ class G2PnPDataset(IterableDataset):
         self._shuffle_seed = shuffle_seed
         self._rank = rank
         self._world_size = world_size
+        self._local_dataset_dir = local_dataset_dir
 
         self._tokenizer = G2PnPTokenizer.get_instance()
         self._vocab = PnPVocabulary()
@@ -71,24 +74,105 @@ class G2PnPDataset(IterableDataset):
             self._lmdb_cache = PnPLabelCache(lmdb_cache_dir, readonly=True)
 
     def _load_stream(self, rank: int = 0, world_size: int = 1) -> Iterable[dict]:
-        """Load ReazonSpeech text-only stream.
+        """Load ReazonSpeech text data.
+
+        データ取得の優先順位:
+        1. local_dataset_dir 指定時 → ローカル Parquet
+        2. デフォルト → TSV 直接ダウンロード (自動キャッシュ, ~76s for 'all')
+        3. TSV 取得失敗時 → HF streaming フォールバック
 
         Args:
             rank: DDP プロセスランク (0-indexed)。
             world_size: DDP ワールドサイズ。world_size > 1 の場合、
                 データを shard して各ランクが異なるサブセットを処理する。
         """
+        if self._local_dataset_dir is not None:
+            return self._load_local(rank, world_size)
+        try:
+            return self._load_tsv(rank, world_size)
+        except Exception:
+            logger.warning("TSV download failed, falling back to HF streaming", exc_info=True)
+            return self._load_hf_streaming(rank, world_size)
+
+    def _load_tsv(self, rank: int = 0, world_size: int = 1) -> Iterable[dict]:
+        """Download TSV from corpus.reazon-research.org and load as Arrow dataset.
+
+        TSV にはテキスト (name + transcription) のみ含まれ、音声データなし。
+        'all' サブセットで ~2GB / ~76s。~/.cache/cc_g2pnp/tsv/ に自動キャッシュ。
+        """
+        from pathlib import Path
+
+        import requests
+
+        cache_dir = Path.home() / ".cache" / "cc_g2pnp" / "tsv"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        tsv_path = cache_dir / f"{self._subset}.tsv"
+
+        if not tsv_path.exists():
+            url = f"{_TSV_BASE_URL}/{self._subset}.tsv"
+            logger.info("Downloading ReazonSpeech TSV: %s", url)
+            resp = requests.get(url, stream=True, timeout=60)
+            resp.raise_for_status()
+            total = int(resp.headers.get("content-length", 0))
+            tmp_path = tsv_path.with_suffix(".tmp")
+            downloaded = 0
+            with open(tmp_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    f.write(chunk)
+                    downloaded += len(chunk)
+            tmp_path.rename(tsv_path)
+            logger.info("TSV cached: %s (%.1f MB)", tsv_path, (total or downloaded) / 1e6)
+        else:
+            logger.info("Using cached TSV: %s", tsv_path)
+
+        ds = load_dataset(
+            "csv", data_files=str(tsv_path), split="train",
+            delimiter="\t", column_names=["name", "transcription"],
+        )
+        if world_size > 1:
+            ds = ds.shard(num_shards=world_size, index=rank)
+        if self._shuffle_seed is not None:
+            ds = ds.shuffle(seed=self._shuffle_seed)
+        return ds
+
+    def _load_hf_streaming(self, rank: int = 0, world_size: int = 1) -> Iterable[dict]:
+        """Fallback: HuggingFace streaming (slow — downloads audio TARs)."""
         ds = load_dataset(
             _REAZON_DATASET,
             self._subset,
             split="train",
-            streaming=self._streaming,
+            streaming=True,
             trust_remote_code=True,
         ).select_columns(["name", "transcription"])
         if world_size > 1:
             ds = ds.shard(num_shards=world_size, index=rank)
-        if self._shuffle_seed is not None and self._streaming:
+        if self._shuffle_seed is not None:
             ds = ds.shuffle(seed=self._shuffle_seed, buffer_size=10_000)
+        return ds
+
+    def _load_local(self, rank: int = 0, world_size: int = 1) -> Iterable[dict]:
+        """Load dataset from local Parquet files (created by scripts/download_text.py).
+
+        Arrow memory-mapped 読み込みでランダムアクセス可能。
+        ストリーミングバッファ制限なしの完全シャッフルが可能。
+        """
+        import glob as glob_mod
+        from pathlib import Path
+
+        parquet_dir = Path(self._local_dataset_dir) / self._subset
+        pattern = str(parquet_dir / "*.parquet")
+        data_files = sorted(glob_mod.glob(pattern))
+        if not data_files:
+            msg = f"No parquet files found in {parquet_dir}"
+            raise FileNotFoundError(msg)
+
+        logger.info("Loading local Parquet dataset from %s (%d files)", parquet_dir, len(data_files))
+        ds = load_dataset("parquet", data_files=data_files, split="train")
+
+        if world_size > 1:
+            ds = ds.shard(num_shards=world_size, index=rank)
+        if self._shuffle_seed is not None:
+            ds = ds.shuffle(seed=self._shuffle_seed)
         return ds
 
     def close(self) -> None:

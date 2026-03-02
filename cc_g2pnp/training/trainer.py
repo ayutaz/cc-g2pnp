@@ -442,12 +442,13 @@ class Trainer:
 
         dataset = G2PnPDataset(
             subset=config.dataset_subset,
-            streaming=True,
+            streaming=config.local_dataset_dir is None,
             max_input_len=config.max_input_len,
             shuffle_seed=config.seed + self._epoch,
             rank=self.rank,
             world_size=self.world_size,
             lmdb_cache_dir=config.lmdb_cache_dir,
+            local_dataset_dir=config.local_dataset_dir,
         )
 
         if num_workers > 0:
@@ -495,8 +496,9 @@ class Trainer:
         try:
             dataset = G2PnPDataset(
                 subset=self.training_config.dataset_subset,
-                streaming=True,
+                streaming=self.training_config.local_dataset_dir is None,
                 max_input_len=self.training_config.max_input_len,
+                local_dataset_dir=self.training_config.local_dataset_dir,
             )
             # 最大100サンプルを収集
             samples: list[dict] = []

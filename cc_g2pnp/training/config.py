@@ -99,6 +99,10 @@ class TrainingConfig:
     If set, dataset reads labels from cache instead of generating on-the-fly.
     Build with: uv run python scripts/preprocess_pnp.py --output <path>"""
 
+    local_dataset_dir: str | None = None
+    """Path to local Parquet dataset directory (from scripts/download_text.py).
+    If set, dataset reads from local files instead of streaming from HuggingFace."""
+
     # ── Checkpoint ─────────────────────────────────────────────────
     async_checkpoint: bool = True
     """Save checkpoints asynchronously in a background thread."""
