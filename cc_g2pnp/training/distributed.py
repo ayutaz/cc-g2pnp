@@ -99,6 +99,8 @@ def wrap_model_ddp(
     device_id: int,
     find_unused_parameters: bool = False,
     bucket_cap_mb: int = 50,
+    static_graph: bool = True,
+    gradient_as_bucket_view: bool = True,
 ) -> DistributedDataParallel:
     """モデルを DDP でラップする。
 
@@ -106,7 +108,9 @@ def wrap_model_ddp(
         model: ラップ対象モデル
         device_id: CUDA デバイスID
         find_unused_parameters: 未使用パラメータを探すかどうか
-        bucket_cap_mb: 勾配バケットサイズ (MB)
+        bucket_cap_mb: 勾配バケットサイズ (MB). 25MB enables earlier backward overlap.
+        static_graph: CTC は静的グラフ; use_reentrant=False で安全に併用可能.
+        gradient_as_bucket_view: 勾配コピー削減で高速化.
 
     Returns:
         DDP ラップされたモデル
@@ -116,4 +120,6 @@ def wrap_model_ddp(
         device_ids=[device_id],
         find_unused_parameters=find_unused_parameters,
         bucket_cap_mb=bucket_cap_mb,
+        static_graph=static_graph,
+        gradient_as_bucket_view=gradient_as_bucket_view,
     )

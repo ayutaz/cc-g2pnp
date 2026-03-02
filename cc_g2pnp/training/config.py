@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 _VALID_MP_CONTEXTS = {"fork", "forkserver", "spawn"}
+_VALID_SCHEDULER_TYPES = {"exponential", "cosine"}
 
 
 @dataclass
@@ -37,13 +38,20 @@ class TrainingConfig:
     warmup_steps: int = 10_000
     """Linear warmup steps."""
 
+    scheduler_type: str = "cosine"
+    """LR scheduler type: 'exponential' (ExponentialLR) or 'cosine' (CosineAnnealingLR)."""
+
+    gradient_accumulation_steps: int = 1
+    """Number of gradient accumulation steps. Effective batch = max_tokens * accumulation_steps."""
+
     # ── Data ──────────────────────────────────────────────────────
     max_tokens_per_batch: int = 8192
     """Maximum BPE tokens per batch (dynamic batching)."""
 
-    max_input_len: int = 512
+    max_input_len: int = 64
     """Maximum BPE token length per sample. Longer samples are filtered out.
-    With upsample_factor=8, T4 (15GB) requires ≤128 to avoid OOM in attention."""
+    ReazonSpeech avg=11.6, P99=45 tokens — 64 covers 99.9% of data.
+    With upsample_factor=8, T=max_input_len*8; smaller values reduce O(T²) attention memory."""
 
     dataset_subset: str = "all"
     """ReazonSpeech dataset subset name."""
@@ -72,8 +80,9 @@ class TrainingConfig:
     use_amp: bool = True
     """Enable automatic mixed precision training."""
 
-    amp_dtype: str = "bfloat16"
-    """AMP data type: 'float16' or 'bfloat16'."""
+    amp_dtype: str = "float16"
+    """AMP data type: 'float16' or 'bfloat16'.
+    T4 GPUs lack bfloat16 Tensor Cores — use float16 for full Tensor Core utilization."""
 
     # ── DDP (Multi-GPU) ───────────────────────────────────────────
     use_ddp: bool = False
@@ -84,7 +93,7 @@ class TrainingConfig:
     """Run validation every N steps."""
 
     # ── Data pipeline ────────────────────────────────────────────
-    num_workers: int = 4
+    num_workers: int = 8
     """Number of DataLoader worker processes for parallel preprocessing."""
 
     multiprocessing_context: str = "forkserver"
@@ -113,6 +122,25 @@ class TrainingConfig:
 
     max_steps: int | None = None
     """Override total_steps for debug/small runs. None uses total_steps."""
+
+    pretrained_weights_only: bool = False
+    """Load only model weights from checkpoint (reset optimizer/scheduler for transfer learning)."""
+
+    use_torch_compile: bool = False
+    """Apply torch.compile to FFN and ConvModule submodules for kernel fusion (15-25% speedup).
+    Graph breaks in the encoder loop prevent whole-model compile; individual modules are compiled instead."""
+
+    gradient_checkpointing: bool = True
+    """Enable gradient checkpointing to reduce activation memory at the cost of ~30% slower backward.
+    Disable if GPU memory allows, to reduce backward cost (65% of step time with checkpointing)."""
+
+    sort_batch_buffer_size: int = 10_000
+    """Buffer size for length-sorted batching. Samples are buffered, sorted by BPE length,
+    then batched — reducing padding waste from ~40-60% to ~5-15%. 0 = disabled (random order)."""
+
+    disable_intermediate_ctc_after: int | None = None
+    """Disable intermediate CTC computation after this many steps to save ~5-10% compute.
+    None = always enabled (paper default). Recommended: set to warmup_steps * 10."""
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
@@ -172,6 +200,12 @@ class TrainingConfig:
             raise ValueError(msg)
         if self.seed < 0:
             msg = f"seed must be >= 0, got {self.seed}"
+            raise ValueError(msg)
+        if self.scheduler_type not in _VALID_SCHEDULER_TYPES:
+            msg = f"scheduler_type must be one of {_VALID_SCHEDULER_TYPES}, got '{self.scheduler_type}'"
+            raise ValueError(msg)
+        if self.gradient_accumulation_steps < 1:
+            msg = f"gradient_accumulation_steps must be >= 1, got {self.gradient_accumulation_steps}"
             raise ValueError(msg)
         if self.multiprocessing_context not in _VALID_MP_CONTEXTS:
             msg = f"multiprocessing_context must be one of {_VALID_MP_CONTEXTS}, got '{self.multiprocessing_context}'"

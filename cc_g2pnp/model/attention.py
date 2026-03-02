@@ -9,6 +9,8 @@ import torch
 import torch.nn.functional as F  # noqa: N812
 from torch import nn
 
+from cc_g2pnp.model.triton_attention import HAS_TRITON, d_k_is_supported, triton_rpe_attention
+
 if TYPE_CHECKING:
     from cc_g2pnp.model.config import CC_G2PnPConfig
 
@@ -135,8 +137,61 @@ class ChunkAwareAttention(nn.Module):
             Output tensor ``[B, T, D]``.
         """
         if self.use_flash_attention:
+            t = x.size(1)
+            # Triton RPE kernel: inference only (backward uses expensive autograd remat).
+            # T<=1024, d_k is power-of-2 in [8..128], CUDA required.
+            if HAS_TRITON and not self.training and t <= 1024 and d_k_is_supported(self.d_k) and x.is_cuda:
+                return self._forward_triton(x, pos_enc, mask)
+            # Use chunk SDPA only when T is large enough that full TxT attention
+            # would cause OOM. For small T (≤1024), single SDPA call is faster.
+            # chunk_sdpa has a Python loop over n_chunks which adds overhead.
+            if mask is not None and t > 1024:
+                return self._forward_chunk_sdpa(x, pos_enc, mask)
             return self._forward_sdpa(x, pos_enc, mask)
         return self._forward_manual(x, pos_enc, mask)
+
+    def _forward_triton(
+        self,
+        x: torch.Tensor,
+        pos_enc: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Triton-fused RPE attention (forward Triton kernel, backward autograd).
+
+        Avoids materializing the dense [B,H,T,T] pos_bias tensor by fusing
+        Q@K^T + Q@pos_K^T into a single Triton kernel. Requires CUDA and
+        Triton 3.x. Falls back to _forward_sdpa if constraints are not met.
+
+        Args:
+            x:       Input ``[B, T, D]``.
+            pos_enc: Positional encoding ``[1, T, D]``.
+            mask:    Optional boolean mask ``[T, T]`` (True = attend).
+
+        Returns:
+            Output tensor ``[B, T, D]``.
+        """
+        x = self.norm(x)
+        b, t, _ = x.shape
+
+        # Project Q, K, V → [B, H, T, d_k]
+        q = self.w_q(x).view(b, t, self.num_heads, self.d_k).transpose(1, 2)
+        k = self.w_k(x).view(b, t, self.num_heads, self.d_k).transpose(1, 2)
+        v = self.w_v(x).view(b, t, self.num_heads, self.d_k).transpose(1, 2)
+
+        # pos_K → [1, H, T, d_k]
+        pos_k = self.pos_k(pos_enc)  # [1, T, D]
+        pos_k = pos_k.view(1, t, self.num_heads, self.d_k).transpose(1, 2)
+
+        scale = 1.0 / math.sqrt(self.d_k)
+        # Move mask to CUDA if needed
+        cuda_mask = mask.to(x.device) if mask is not None else None
+
+        # Triton forward: [B, H, T, d_k] in float16
+        out = triton_rpe_attention(q, k, v, pos_k, cuda_mask, scale)
+
+        # Reshape: [B, H, T, d_k] → [B, T, D], cast back to input dtype
+        out = out.to(x.dtype).transpose(1, 2).contiguous().view(b, t, -1)
+        return self.dropout(self.w_out(out))
 
     def _forward_manual(
         self,
@@ -209,6 +264,9 @@ class ChunkAwareAttention(nn.Module):
             attn_mask = pos_bias.masked_fill(inv_mask, float("-inf"))
         else:
             attn_mask = pos_bias
+
+        # Cast to q.dtype so under AMP float16 the mask is fp16, saving VRAM
+        attn_mask = attn_mask.to(dtype=q.dtype)
 
         # SDPA: softmax(Q@K^T/sqrt(d_k) + attn_mask) @ V
         dp = self.attn_dropout.p if self.training else 0.0
@@ -284,6 +342,9 @@ class ChunkAwareAttention(nn.Module):
             if mask is not None:
                 mask_slice = mask[q_start:q_end, kv_start:kv_end]  # [C, W]
                 attn_mask = attn_mask.masked_fill(~mask_slice.unsqueeze(0).unsqueeze(0), float("-inf"))
+
+            # Cast to q.dtype so under AMP float16 the mask is fp16, saving VRAM
+            attn_mask = attn_mask.to(dtype=q.dtype)
 
             dp = self.attn_dropout.p if self.training else 0.0
             out_chunk = F.scaled_dot_product_attention(q_chunk, k_chunk, v_chunk, attn_mask=attn_mask, dropout_p=dp)

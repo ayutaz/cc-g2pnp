@@ -41,12 +41,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--total-steps", type=int, default=1_200_000, help="Total training steps")
     parser.add_argument("--warmup-steps", type=int, default=10_000, help="Linear warmup steps")
     parser.add_argument("--max-steps", type=int, default=None, help="Override total_steps for debug/small runs")
+    parser.add_argument("--scheduler-type", type=str, default="cosine",
+                        choices=["exponential", "cosine"],
+                        help="LR scheduler type: exponential (ExponentialLR) or cosine (CosineAnnealingLR)")
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=1,
+                        help="Gradient accumulation steps (effective batch = max_tokens * accum_steps)")
 
     # Data
     parser.add_argument("--max-tokens", type=int, default=8192, help="Maximum BPE tokens per batch")
-    parser.add_argument("--max-input-len", type=int, default=512, help="Maximum BPE token length per sample (T4: use 128)")
+    parser.add_argument("--max-input-len", type=int, default=64,
+                        help="Maximum BPE token length per sample (ReazonSpeech P99=45, 64 covers 99.9%%)")
     parser.add_argument("--dataset-subset", type=str, default="all", help="ReazonSpeech dataset subset name")
-    parser.add_argument("--num-workers", type=int, default=4, help="DataLoader worker processes for parallel preprocessing")
+    parser.add_argument("--num-workers", type=int, default=8, help="DataLoader worker processes for parallel preprocessing")
     parser.add_argument("--mp-context", type=str, default="forkserver",
                         choices=["fork", "forkserver", "spawn"],
                         help="Multiprocessing start method for DataLoader workers")
@@ -77,7 +83,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-amp", action="store_false", dest="amp", help="Disable automatic mixed precision")
     parser.set_defaults(amp=True)
     parser.add_argument(
-        "--amp-dtype", type=str, default="bfloat16", choices=["float16", "bfloat16"], help="AMP data type"
+        "--amp-dtype", type=str, default="float16", choices=["float16", "bfloat16"],
+        help="AMP data type (float16 recommended for T4; bfloat16 only for Ampere+)"
     )
 
     # DDP
@@ -89,6 +96,21 @@ def parse_args() -> argparse.Namespace:
 
     # Validation
     parser.add_argument("--val-every", type=int, default=5_000, help="Run validation every N steps")
+
+    # Transfer learning
+    parser.add_argument("--pretrained-weights-only", action="store_true",
+                        help="Load only model weights from checkpoint (reset optimizer/scheduler for transfer learning)")
+
+    # Performance optimizations
+    parser.add_argument("--use-torch-compile", action="store_true",
+                        help="Apply torch.compile to FFN and ConvModule for kernel fusion (15-25%% speedup)")
+    parser.add_argument("--no-gradient-checkpointing", action="store_false", dest="gradient_checkpointing",
+                        help="Disable gradient checkpointing (faster backward, more memory)")
+    parser.set_defaults(gradient_checkpointing=True)
+    parser.add_argument("--sort-batch-buffer", type=int, default=10_000,
+                        help="Buffer size for length-sorted batching (0 to disable)")
+    parser.add_argument("--disable-intermediate-ctc-after", type=int, default=None,
+                        help="Disable intermediate CTC after N steps to save compute")
 
     # Misc
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
@@ -147,6 +169,13 @@ def main() -> None:
         lmdb_cache_dir=args.lmdb_cache_dir,
         local_dataset_dir=args.local_dataset_dir,
         async_checkpoint=args.async_checkpoint,
+        scheduler_type=args.scheduler_type,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        pretrained_weights_only=args.pretrained_weights_only,
+        use_torch_compile=args.use_torch_compile,
+        gradient_checkpointing=args.gradient_checkpointing,
+        sort_batch_buffer_size=args.sort_batch_buffer,
+        disable_intermediate_ctc_after=args.disable_intermediate_ctc_after,
     )
 
     trainer = Trainer(model_config, training_config, rank=rank, world_size=world_size)

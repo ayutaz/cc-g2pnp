@@ -19,7 +19,11 @@ class TestTrainingConfigDefaults:
         assert cfg.max_grad_norm == 1.0
         assert cfg.total_steps == 1_200_000
         assert cfg.warmup_steps == 10_000
+        assert cfg.scheduler_type == "cosine"
+        assert cfg.gradient_accumulation_steps == 1
         assert cfg.max_tokens_per_batch == 8192
+        assert cfg.max_input_len == 64
+        assert cfg.num_workers == 8
         assert cfg.dataset_subset == "all"
         assert cfg.checkpoint_dir == "checkpoints"
         assert cfg.save_every_n_steps == 10_000
@@ -28,11 +32,12 @@ class TestTrainingConfigDefaults:
         assert cfg.project_name == "cc-g2pnp"
         assert cfg.run_name is None
         assert cfg.use_amp is True
-        assert cfg.amp_dtype == "bfloat16"
+        assert cfg.amp_dtype == "float16"
         assert cfg.use_ddp is False
         assert cfg.val_every_n_steps == 5_000
         assert cfg.seed == 42
         assert cfg.max_steps is None
+        assert cfg.pretrained_weights_only is False
 
     def test_betas_is_tuple(self) -> None:
         cfg = TrainingConfig()
@@ -161,6 +166,11 @@ class TestTrainingConfigValidation:
     def test_amp_dtype_bfloat16_valid(self) -> None:
         cfg = TrainingConfig(amp_dtype="bfloat16")
         assert cfg.amp_dtype == "bfloat16"
+
+    def test_amp_dtype_default_is_float16(self) -> None:
+        """T4 GPUs lack bfloat16 Tensor Cores, so default should be float16."""
+        cfg = TrainingConfig()
+        assert cfg.amp_dtype == "float16"
 
     def test_max_tokens_per_batch_zero(self) -> None:
         with pytest.raises(ValueError, match="max_tokens_per_batch must be positive"):
@@ -332,3 +342,56 @@ class TestMultiprocessingContext:
     def test_num_workers_zero_valid(self) -> None:
         cfg = TrainingConfig(num_workers=0)
         assert cfg.num_workers == 0
+
+
+class TestSchedulerType:
+    """Test scheduler_type validation."""
+
+    def test_default_scheduler_type(self) -> None:
+        cfg = TrainingConfig()
+        assert cfg.scheduler_type == "cosine"
+
+    def test_valid_scheduler_types(self) -> None:
+        for stype in ("exponential", "cosine"):
+            cfg = TrainingConfig(scheduler_type=stype)
+            assert cfg.scheduler_type == stype
+
+    def test_invalid_scheduler_type(self) -> None:
+        with pytest.raises(ValueError, match="scheduler_type must be one of"):
+            TrainingConfig(scheduler_type="invalid")
+
+
+class TestGradientAccumulation:
+    """Test gradient_accumulation_steps validation."""
+
+    def test_default_gradient_accumulation(self) -> None:
+        cfg = TrainingConfig()
+        assert cfg.gradient_accumulation_steps == 1
+
+    def test_valid_accumulation_steps(self) -> None:
+        cfg = TrainingConfig(gradient_accumulation_steps=4)
+        assert cfg.gradient_accumulation_steps == 4
+
+    def test_accumulation_steps_zero_rejected(self) -> None:
+        with pytest.raises(ValueError, match="gradient_accumulation_steps must be >= 1"):
+            TrainingConfig(gradient_accumulation_steps=0)
+
+    def test_accumulation_steps_negative_rejected(self) -> None:
+        with pytest.raises(ValueError, match="gradient_accumulation_steps must be >= 1"):
+            TrainingConfig(gradient_accumulation_steps=-1)
+
+
+class TestPretrainedWeightsOnly:
+    """Test pretrained_weights_only field."""
+
+    def test_default_false(self) -> None:
+        cfg = TrainingConfig()
+        assert cfg.pretrained_weights_only is False
+        assert cfg.use_torch_compile is False
+        assert cfg.gradient_checkpointing is True
+        assert cfg.sort_batch_buffer_size == 10_000
+        assert cfg.disable_intermediate_ctc_after is None
+
+    def test_can_enable(self) -> None:
+        cfg = TrainingConfig(pretrained_weights_only=True)
+        assert cfg.pretrained_weights_only is True

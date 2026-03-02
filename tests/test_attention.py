@@ -537,3 +537,109 @@ def test_chunk_sdpa_memory_smaller():
 
     assert out.shape == (1, seq_len, 32)
     assert torch.isfinite(out).all()
+
+
+# ── Chunk SDPA dispatch + fp16 mask (speedup) ────────────────────
+
+
+def test_forward_dispatches_to_chunk_sdpa_with_mask():
+    """forward() with use_flash_attention=True AND mask dispatches to _forward_chunk_sdpa."""
+    torch.manual_seed(50)
+    config = _make_sdpa_config()
+    attn = ChunkAwareAttention(config)
+    attn.eval()
+
+    x = torch.randn(2, 9, 32)
+    pos_enc = torch.randn(1, 9, 32)
+    mask = create_chunk_mask(seq_len=9, chunk_size=3, past_context=2)
+
+    with torch.no_grad():
+        # forward() with mask should use _forward_chunk_sdpa
+        out_forward = attn(x, pos_enc, mask=mask)
+        out_chunk = attn._forward_chunk_sdpa(x, pos_enc, mask=mask)
+
+    assert out_forward.shape == (2, 9, 32)
+    assert torch.isfinite(out_forward).all()
+    assert torch.allclose(out_forward, out_chunk, atol=1e-6), (
+        f"Max diff: {(out_forward - out_chunk).abs().max().item()}"
+    )
+
+
+def test_forward_dispatches_to_sdpa_without_mask():
+    """forward() with use_flash_attention=True AND mask=None dispatches to _forward_sdpa."""
+    torch.manual_seed(51)
+    config = _make_sdpa_config()
+    attn = ChunkAwareAttention(config)
+    attn.eval()
+
+    x = torch.randn(2, 8, 32)
+    pos_enc = torch.randn(1, 8, 32)
+
+    with torch.no_grad():
+        # forward() without mask should use _forward_sdpa
+        out_forward = attn(x, pos_enc, mask=None)
+        out_sdpa = attn._forward_sdpa(x, pos_enc, mask=None)
+
+    assert out_forward.shape == (2, 8, 32)
+    assert torch.isfinite(out_forward).all()
+    assert torch.allclose(out_forward, out_sdpa, atol=1e-6), (
+        f"Max diff: {(out_forward - out_sdpa).abs().max().item()}"
+    )
+
+
+def test_fp16_autocast_sdpa():
+    """SDPA path produces valid output under float16 autocast."""
+    torch.manual_seed(52)
+    config = _make_sdpa_config()
+    attn = ChunkAwareAttention(config)
+    attn.eval()
+
+    x = torch.randn(1, 9, 32)
+    pos_enc = torch.randn(1, 9, 32)
+    mask = create_chunk_mask(seq_len=9, chunk_size=3, past_context=2)
+
+    with torch.no_grad(), torch.amp.autocast("cpu", dtype=torch.float16):
+        out_with_mask = attn(x, pos_enc, mask=mask)
+        out_no_mask = attn(x, pos_enc, mask=None)
+
+    assert out_with_mask.shape == (1, 9, 32)
+    assert out_no_mask.shape == (1, 9, 32)
+    assert torch.isfinite(out_with_mask).all()
+    assert torch.isfinite(out_no_mask).all()
+
+
+def test_fp16_autocast_chunk_sdpa_direct():
+    """_forward_chunk_sdpa produces valid output under float16 autocast."""
+    torch.manual_seed(53)
+    config = _make_sdpa_config()
+    attn = ChunkAwareAttention(config)
+    attn.eval()
+
+    x = torch.randn(2, 9, 32)
+    pos_enc = torch.randn(1, 9, 32)
+    mask = create_chunk_mask(seq_len=9, chunk_size=3, past_context=2)
+
+    with torch.no_grad(), torch.amp.autocast("cpu", dtype=torch.float16):
+        out = attn._forward_chunk_sdpa(x, pos_enc, mask=mask)
+
+    assert out.shape == (2, 9, 32)
+    assert torch.isfinite(out).all()
+
+
+def test_chunk_sdpa_and_sdpa_numerical_equivalence_no_mask():
+    """_forward_chunk_sdpa and _forward_sdpa produce same output when mask=None."""
+    torch.manual_seed(54)
+    config = _make_sdpa_config()
+    attn = ChunkAwareAttention(config)
+    attn.eval()
+
+    x = torch.randn(2, 8, 32)
+    pos_enc = torch.randn(1, 8, 32)
+
+    with torch.no_grad():
+        out_sdpa = attn._forward_sdpa(x, pos_enc, mask=None)
+        out_chunk = attn._forward_chunk_sdpa(x, pos_enc, mask=None)
+
+    assert torch.allclose(out_sdpa, out_chunk, atol=1e-5), (
+        f"Max diff: {(out_sdpa - out_chunk).abs().max().item()}"
+    )

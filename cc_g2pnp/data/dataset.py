@@ -67,11 +67,8 @@ class G2PnPDataset(IterableDataset):
         # Set by DataLoader worker_init_fn for per-process OpenJTalk instance
         self.jtalk = None
 
+        self._lmdb_cache_dir = lmdb_cache_dir
         self._lmdb_cache = None
-        if lmdb_cache_dir is not None:
-            from cc_g2pnp.data.lmdb_cache import PnPLabelCache
-
-            self._lmdb_cache = PnPLabelCache(lmdb_cache_dir, readonly=True)
 
     def _load_stream(self, rank: int = 0, world_size: int = 1) -> Iterable[dict]:
         """Load ReazonSpeech text data.
@@ -194,6 +191,12 @@ class G2PnPDataset(IterableDataset):
         yielded = 0
         cache_hits = 0
         cache_misses = 0
+
+        # LMDB キャッシュの遅延初期化 (pickle 不可な Environment を避けるため)
+        if self._lmdb_cache is None and self._lmdb_cache_dir is not None:
+            from cc_g2pnp.data.lmdb_cache import PnPLabelCache
+
+            self._lmdb_cache = PnPLabelCache(self._lmdb_cache_dir, readonly=True)
 
         # DataLoader マルチワーカー対応: ワーカーごとにシャードを分割して重複を防ぐ
         import torch.utils.data

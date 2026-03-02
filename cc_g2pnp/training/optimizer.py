@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import torch
 from torch import nn
-from torch.optim.lr_scheduler import ExponentialLR, LinearLR, SequentialLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, ExponentialLR, LinearLR, SequentialLR
 
 if TYPE_CHECKING:
     from torch.optim.lr_scheduler import LRScheduler
@@ -63,16 +63,43 @@ def build_scheduler(
 ) -> LRScheduler:
     """学習率スケジューラを構築する。
 
-    warmup_steps > 0 の場合、LinearLR (warmup) + ExponentialLR を SequentialLR で結合する。
-    warmup_steps == 0 の場合、ExponentialLR のみを返す。
+    scheduler_type == "cosine" の場合:
+        warmup_steps > 0 なら LinearLR (warmup) + CosineAnnealingLR を SequentialLR で結合。
+        warmup_steps == 0 なら CosineAnnealingLR のみを返す。
+    scheduler_type == "exponential" の場合:
+        warmup_steps > 0 なら LinearLR (warmup) + ExponentialLR を SequentialLR で結合。
+        warmup_steps == 0 なら ExponentialLR のみを返す。
 
     Args:
         optimizer: 対象 optimizer。
-        config: TrainingConfig (learning_rate, warmup_steps, scheduler_gamma を使用)。
+        config: TrainingConfig (learning_rate, warmup_steps, scheduler_gamma,
+                scheduler_type, final_learning_rate, effective_steps を使用)。
 
     Returns:
         学習率スケジューラ。
     """
+    if config.scheduler_type == "cosine":
+        decay_steps = config.effective_steps - config.warmup_steps
+        cosine_lr = CosineAnnealingLR(
+            optimizer,
+            T_max=decay_steps,
+            eta_min=config.final_learning_rate,
+        )
+        if config.warmup_steps == 0:
+            return cosine_lr
+        start_factor = max(1e-8 / config.learning_rate, 1e-10)
+        warmup_lr = LinearLR(
+            optimizer,
+            start_factor=start_factor,
+            total_iters=config.warmup_steps,
+        )
+        return SequentialLR(
+            optimizer,
+            schedulers=[warmup_lr, cosine_lr],
+            milestones=[config.warmup_steps],
+        )
+
+    # exponential (default)
     exponential_lr = ExponentialLR(optimizer, gamma=config.scheduler_gamma)
 
     if config.warmup_steps == 0:

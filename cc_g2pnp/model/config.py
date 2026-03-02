@@ -48,9 +48,10 @@ class CC_G2PnPConfig:
     conv_expansion_factor: int = 2
     """Pointwise conv expansion for GLU: d_model → d_model*2 → GLU → d_model."""
 
-    use_groupnorm: bool = False
+    use_groupnorm: bool = True
     """Use GroupNorm instead of BatchNorm in ConformerConvModule.
-    Reduces DDP sync overhead (+3-8%) and improves fp16 stability."""
+    Reduces DDP sync overhead (+3-8%) and improves fp16 stability.
+    Recommended for DDP training (no cross-rank statistics synchronization needed)."""
 
     # ── Streaming ───────────────────────────────────────────────
     chunk_size: int = 5

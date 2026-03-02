@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from torch import nn
-from torch.optim.lr_scheduler import ExponentialLR, SequentialLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, ExponentialLR, SequentialLR
 
 from cc_g2pnp.training.optimizer import build_optimizer, build_scheduler
 
@@ -22,6 +22,9 @@ def _make_config(
     betas: tuple[float, float] = (0.9, 0.98),
     warmup_steps: int = 10_000,
     scheduler_gamma: float = 0.999_998,
+    scheduler_type: str = "exponential",
+    final_learning_rate: float = 1e-5,
+    effective_steps: int = 1_200_000,
 ) -> SimpleNamespace:
     """TrainingConfig のダミーを生成する。"""
     return SimpleNamespace(
@@ -30,6 +33,9 @@ def _make_config(
         betas=betas,
         warmup_steps=warmup_steps,
         scheduler_gamma=scheduler_gamma,
+        scheduler_type=scheduler_type,
+        final_learning_rate=final_learning_rate,
+        effective_steps=effective_steps,
     )
 
 
@@ -273,3 +279,106 @@ class TestBuildScheduler:
         # 学習が進み lr が初期値より小さいこと
         final_lr = optimizer.param_groups[0]["lr"]
         assert final_lr < config.learning_rate
+
+
+# ===========================================================================
+# Cosine scheduler tests
+# ===========================================================================
+
+class TestCosineScheduler:
+    """CosineAnnealingLR スケジューラのテスト。"""
+
+    def test_cosine_returns_sequential_with_warmup(self) -> None:
+        """warmup_steps > 0 の場合 SequentialLR を返すこと。"""
+        config = _make_config(scheduler_type="cosine", warmup_steps=100, effective_steps=1000)
+        model = _make_model()
+        optimizer = build_optimizer(model, config)
+        scheduler = build_scheduler(optimizer, config)
+        assert isinstance(scheduler, SequentialLR)
+
+    def test_cosine_returns_cosine_without_warmup(self) -> None:
+        """warmup_steps == 0 の場合 CosineAnnealingLR を返すこと。"""
+        config = _make_config(scheduler_type="cosine", warmup_steps=0, effective_steps=1000)
+        model = _make_model()
+        optimizer = build_optimizer(model, config)
+        scheduler = build_scheduler(optimizer, config)
+        assert isinstance(scheduler, CosineAnnealingLR)
+
+    def test_cosine_lr_decreases_after_warmup(self) -> None:
+        """warmup 後に cosine スケジューラで lr が減少すること。"""
+        config = _make_config(
+            scheduler_type="cosine",
+            learning_rate=1e-3,
+            warmup_steps=10,
+            effective_steps=1000,
+            final_learning_rate=1e-5,
+        )
+        model = _make_model()
+        optimizer = build_optimizer(model, config)
+        scheduler = build_scheduler(optimizer, config)
+
+        # warmup 期間: lr が増加する
+        warmup_lrs = []
+        for _ in range(10):
+            warmup_lrs.append(optimizer.param_groups[0]["lr"])
+            optimizer.step()
+            scheduler.step()
+
+        for i in range(1, len(warmup_lrs)):
+            assert warmup_lrs[i] >= warmup_lrs[i - 1]
+
+        # warmup 直後の lr を記録
+        lr_after_warmup = optimizer.param_groups[0]["lr"]
+
+        # cosine decay: lr が減少する
+        for _ in range(50):
+            optimizer.step()
+            scheduler.step()
+
+        lr_later = optimizer.param_groups[0]["lr"]
+        assert lr_later < lr_after_warmup
+
+    def test_cosine_lr_reaches_eta_min(self) -> None:
+        """cosine スケジューラで lr が final_learning_rate に到達すること。"""
+        final_lr = 1e-5
+        effective = 200
+        warmup = 0
+        config = _make_config(
+            scheduler_type="cosine",
+            learning_rate=1e-3,
+            warmup_steps=warmup,
+            effective_steps=effective,
+            final_learning_rate=final_lr,
+        )
+        model = nn.Linear(4, 2)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
+        scheduler = build_scheduler(optimizer, config)
+
+        # T_max ステップ進める
+        for _ in range(effective):
+            optimizer.step()
+            scheduler.step()
+
+        actual_lr = optimizer.param_groups[0]["lr"]
+        assert math.isclose(actual_lr, final_lr, rel_tol=1e-6)
+
+    def test_exponential_still_works(self) -> None:
+        """scheduler_type="exponential" で既存動作が維持されること。"""
+        gamma = 0.99
+        lr = 1e-3
+        config = _make_config(
+            scheduler_type="exponential",
+            learning_rate=lr,
+            warmup_steps=0,
+            scheduler_gamma=gamma,
+        )
+        model = nn.Linear(4, 2)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+        scheduler = build_scheduler(optimizer, config)
+        assert isinstance(scheduler, ExponentialLR)
+
+        optimizer.step()
+        scheduler.step()
+        expected_lr = lr * gamma
+        actual_lr = optimizer.param_groups[0]["lr"]
+        assert math.isclose(actual_lr, expected_lr, rel_tol=1e-6)

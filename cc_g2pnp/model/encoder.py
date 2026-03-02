@@ -71,12 +71,15 @@ class ConformerEncoder(nn.Module):
         self,
         x: torch.Tensor,
         input_lengths: torch.Tensor | None = None,
+        enable_intermediate_ctc: bool = True,
     ) -> dict[str, torch.Tensor | list[torch.Tensor]]:
         """Run the Conformer encoder stack.
 
         Args:
             x: Input tensor of shape ``[B, T, D]``.
             input_lengths: Optional lengths (unused; reserved for masking).
+            enable_intermediate_ctc: If False, skip intermediate CTC projections
+                and return empty ``intermediate_logits``.
 
         Returns:
             Dict with keys ``'output'`` and ``'intermediate_logits'``.
@@ -104,7 +107,7 @@ class ConformerEncoder(nn.Module):
             else:
                 x = layer(x, pos_enc, mask)
 
-            if i in self._intermediate_ctc_layers:
+            if enable_intermediate_ctc and i in self._intermediate_ctc_layers:
                 inter_logits = self.ctc_projection(x)
                 intermediate_logits.append(inter_logits)
                 x = x + self.ctc_to_hidden(inter_logits)

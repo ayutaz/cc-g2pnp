@@ -264,7 +264,8 @@ class TestLmdbCacheIntegration:
         cache_dir = _make_lmdb_cache(tmp_path, {text: pnp_ids})
 
         ds = _make_dataset(lmdb_cache_dir=cache_dir)
-        assert ds._lmdb_cache is not None
+        # LMDB cache is lazily initialized in __iter__, not __init__
+        assert ds._lmdb_cache_dir == cache_dir
 
         with patch("cc_g2pnp.data.dataset.generate_pnp_labels") as mock_gen:
             results = _collect(ds, [_make_sample(text)])

@@ -32,9 +32,9 @@ def test_different_sequence_lengths():
 
 
 def test_causal_property():
-    """因果性: 未来の入力変更が過去の出力に影響しないことを検証."""
+    """因果性: 未来の入力変更が過去の出力に影響しないことを検証 (BatchNorm 使用)."""
     torch.manual_seed(42)
-    config = CC_G2PnPConfig()
+    config = CC_G2PnPConfig(use_groupnorm=False)
     model = ConformerConvModule(config)
     model.eval()
 
@@ -93,11 +93,11 @@ def test_dropout_effect():
 
 
 def test_batch_size_one_eval():
-    """batch_size=1 in eval mode should work correctly (BatchNorm uses running stats)."""
+    """batch_size=1 in eval mode should work correctly."""
     torch.manual_seed(42)
     config = CC_G2PnPConfig()
     model = ConformerConvModule(config)
-    # First pass in train mode to accumulate running stats
+    # First pass in train mode to accumulate stats (for BatchNorm compatibility)
     model.train()
     x_train = torch.randn(4, 50, config.d_model)
     model(x_train)
@@ -167,7 +167,7 @@ def test_groupnorm_no_batch_stats():
 
 
 def test_groupnorm_config_flag():
-    """デフォルト設定では BatchNorm、use_groupnorm=True では GroupNorm が使われることを検証."""
+    """use_groupnorm=False では BatchNorm、use_groupnorm=True では GroupNorm が使われることを検証."""
     config_bn = CC_G2PnPConfig(use_groupnorm=False)
     model_bn = ConformerConvModule(config_bn)
     assert isinstance(model_bn.norm, torch.nn.BatchNorm1d)

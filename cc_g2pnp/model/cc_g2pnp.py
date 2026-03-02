@@ -47,6 +47,7 @@ class CC_G2PnP(nn.Module):
         input_lengths: torch.Tensor,
         targets: torch.Tensor | None = None,
         target_lengths: torch.Tensor | None = None,
+        enable_intermediate_ctc: bool = True,
     ) -> dict[str, torch.Tensor | list[torch.Tensor]]:
         """Forward pass with optional CTC loss computation.
 
@@ -55,6 +56,8 @@ class CC_G2PnP(nn.Module):
             input_lengths: Valid lengths before padding ``[B]``.
             targets: PnP label IDs ``[B, S]`` (optional, for training).
             target_lengths: Valid target lengths ``[B]`` (optional).
+            enable_intermediate_ctc: If False, skip intermediate CTC projections
+                to save compute after early training stages.
 
         Returns:
             Dict with keys:
@@ -66,7 +69,7 @@ class CC_G2PnP(nn.Module):
         x = self.embedding(input_ids)
 
         # 2. Encoder: [B, T*8, D] -> {'output': [B, T*8, D], 'intermediate_logits': [...]}
-        enc_out = self.encoder(x, input_lengths)
+        enc_out = self.encoder(x, input_lengths, enable_intermediate_ctc=enable_intermediate_ctc)
 
         # 3. CTC Head: [B, T*8, D] -> [B, T*8, V] (log probs)
         log_probs = self.ctc_head(enc_out["output"])

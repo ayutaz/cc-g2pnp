@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import logging
 import queue
@@ -16,7 +17,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from cc_g2pnp.data.collator import DynamicBatchCollator, dynamic_batch_sampler
+from cc_g2pnp.data.collator import DynamicBatchCollator, dynamic_batch_sampler, sorted_dynamic_batch_sampler
 from cc_g2pnp.data.dataset import G2PnPDataset
 from cc_g2pnp.data.vocabulary import PnPVocabulary
 from cc_g2pnp.model.cc_g2pnp import CC_G2PnP
@@ -140,8 +141,15 @@ class Trainer:
 
         # 4. モデル作成 → デバイスに移動
         self.model: nn.Module = CC_G2PnP(model_config).to(self.device)
-        # Gradient checkpointing: 中間活性化をバックプロップ時に再計算してメモリ削減
-        self.model.set_gradient_checkpointing(True)
+        # Gradient checkpointing: 設定フラグに基づいて制御
+        self.model.set_gradient_checkpointing(training_config.gradient_checkpointing)
+
+        # 4b. torch.compile: FFN / ConvModule を個別にコンパイル (DDP wrap 前)
+        if training_config.use_torch_compile:
+            for layer in self.model.encoder.layers:
+                layer.ffn1 = torch.compile(layer.ffn1, mode="reduce-overhead")
+                layer.ffn2 = torch.compile(layer.ffn2, mode="reduce-overhead")
+                layer.conv = torch.compile(layer.conv, mode="reduce-overhead")
 
         # 5. DDP ラップ
         if training_config.use_ddp:
@@ -222,43 +230,63 @@ class Trainer:
                 desc="Training",
             )
 
+        accum_steps = config.gradient_accumulation_steps
+
         try:
+            self.optimizer.zero_grad(set_to_none=True)
+
             for step in range(start_step, effective_steps):
                 self.global_step = step
+                total_loss = 0.0
 
-                # バッチ取得 (StopIteration でエポック再開, ネットワークエラーでリトライ)
-                batch = None
-                for _retry in range(_MAX_DATA_RETRIES):
-                    try:
-                        batch = next(data_iter)
-                        break
-                    except StopIteration:
-                        logger.info("Epoch ended at step %d, restarting data iterator", step)
-                        self._epoch += 1
-                        if hasattr(data_iter, "close"):
-                            data_iter.close()
-                        data_iter = self._create_data_iterator()
-                        # 新しいイテレータへの最初の next() もネットワークエラーの可能性があるため
-                        # リトライループの先頭に戻り、既存のネットワークエラーリトライで保護する
-                        continue
-                    except (ConnectionError, OSError, TimeoutError) as exc:
-                        wait = min(2 ** _retry * 10, 300)
-                        logger.warning(
-                            "Network error at step %d (retry %d/%d): %s. "
-                            "Retrying in %ds...",
-                            step, _retry + 1, _MAX_DATA_RETRIES, exc, wait,
+                for micro_step in range(accum_steps):
+                    # バッチ取得 (StopIteration でエポック再開, ネットワークエラーでリトライ)
+                    batch = None
+                    for _retry in range(_MAX_DATA_RETRIES):
+                        try:
+                            batch = next(data_iter)
+                            break
+                        except StopIteration:
+                            logger.info("Epoch ended at step %d, restarting data iterator", step)
+                            self._epoch += 1
+                            if hasattr(data_iter, "close"):
+                                data_iter.close()
+                            data_iter = self._create_data_iterator()
+                            continue
+                        except (ConnectionError, OSError, TimeoutError) as exc:
+                            wait = min(2 ** _retry * 10, 300)
+                            logger.warning(
+                                "Network error at step %d (retry %d/%d): %s. "
+                                "Retrying in %ds...",
+                                step, _retry + 1, _MAX_DATA_RETRIES, exc, wait,
+                            )
+                            if hasattr(data_iter, "close"):
+                                data_iter.close()
+                            time.sleep(wait)
+                            data_iter = self._create_data_iterator()
+                    if batch is None:
+                        raise RuntimeError(
+                            f"Failed to fetch batch after {_MAX_DATA_RETRIES} retries at step {step}"
                         )
-                        if hasattr(data_iter, "close"):
-                            data_iter.close()
-                        time.sleep(wait)
-                        data_iter = self._create_data_iterator()
-                if batch is None:
-                    raise RuntimeError(
-                        f"Failed to fetch batch after {_MAX_DATA_RETRIES} retries at step {step}"
-                    )
 
-                # Train step
-                step_metrics = self.train_step(batch)
+                    # DDP: 中間マイクロステップでは勾配同期をスキップ
+                    sync_context = (
+                        self.model.no_sync()
+                        if config.use_ddp and hasattr(self.model, "no_sync") and micro_step < accum_steps - 1
+                        else contextlib.nullcontext()
+                    )
+                    with sync_context:
+                        micro_metrics = self.train_step(batch)
+                    total_loss += micro_metrics["loss"]
+
+                # Optimizer step (once per logical step)
+                grad_norm = self._optimizer_step()
+
+                step_metrics = {
+                    "loss": total_loss / accum_steps,
+                    "lr": self.scheduler.get_last_lr()[0],
+                    "grad_norm": grad_norm,
+                }
 
                 # ログステップ: DDP メトリクス平均化 + ログ
                 if step % config.log_every_n_steps == 0:
@@ -353,13 +381,16 @@ class Trainer:
                 cleanup_ddp()
 
     def train_step(self, batch: dict) -> dict[str, float]:
-        """1ステップの訓練を実行する。
+        """Forward + backward pass (optimizer step は train() で実行)。
+
+        勾配累積のため、loss は gradient_accumulation_steps で割ってから backward する。
+        返す loss 値はスケーリング前の原値。
 
         Args:
             batch: Collator 出力のバッチ辞書。
 
         Returns:
-            {"loss": float, "lr": float, "grad_norm": float}
+            {"loss": float, "lr": float}
         """
         self.model.train()
         config = self.training_config
@@ -369,6 +400,12 @@ class Trainer:
         input_lengths = batch["input_lengths"].to(self.device, non_blocking=True)
         labels = batch["labels"].to(self.device, non_blocking=True)
         label_lengths = batch["label_lengths"].to(self.device, non_blocking=True)
+
+        # Intermediate CTC: disable_intermediate_ctc_after 以降はスキップ
+        enable_inter_ctc = (
+            config.disable_intermediate_ctc_after is None
+            or self.global_step < config.disable_intermediate_ctc_after
+        )
 
         # AMP context
         with torch.amp.autocast(
@@ -381,35 +418,49 @@ class Trainer:
                 input_lengths=input_lengths,
                 targets=labels,
                 target_lengths=label_lengths,
+                enable_intermediate_ctc=enable_inter_ctc,
             )
             loss = result["loss"]
 
-        # Backward + optimizer step
+        # Scale loss for gradient accumulation
+        scaled_loss = loss / config.gradient_accumulation_steps
+
+        # Backward only (no optimizer step)
         if self._use_scaler:
-            self.scaler.scale(loss).backward()
+            self.scaler.scale(scaled_loss).backward()
+        else:
+            scaled_loss.backward()
+
+        return {
+            "loss": loss.item(),
+            "lr": self.scheduler.get_last_lr()[0],
+        }
+
+    def _optimizer_step(self) -> float:
+        """Gradient clipping + optimizer step + scheduler step + zero_grad.
+
+        Returns:
+            grad_norm (float)
+        """
+        config = self.training_config
+
+        if self._use_scaler:
             self.scaler.unscale_(self.optimizer)
             grad_norm = nn.utils.clip_grad_norm_(
-                self.model.parameters(), config.max_grad_norm,
+                self.model.parameters(), config.max_grad_norm, foreach=True,
             )
             self.scaler.step(self.optimizer)
             self.scaler.update()
         else:
-            loss.backward()
             grad_norm = nn.utils.clip_grad_norm_(
-                self.model.parameters(), config.max_grad_norm,
+                self.model.parameters(), config.max_grad_norm, foreach=True,
             )
             self.optimizer.step()
 
         self.scheduler.step()
         self.optimizer.zero_grad(set_to_none=True)
 
-        return {
-            "loss": loss.item(),
-            "lr": self.scheduler.get_last_lr()[0],
-            "grad_norm": grad_norm.item()
-            if isinstance(grad_norm, torch.Tensor)
-            else float(grad_norm),
-        }
+        return grad_norm.item() if isinstance(grad_norm, torch.Tensor) else float(grad_norm)
 
     def _save_checkpoint(
         self, step: int, metrics: dict[str, float] | None = None,
@@ -462,10 +513,17 @@ class Trainer:
                 persistent_workers=True,
                 multiprocessing_context=config.multiprocessing_context,
             )
-            # DataLoader → dynamic_batch_sampler → collator
-            sampler = dynamic_batch_sampler(
-                loader, max_tokens=config.max_tokens_per_batch,
-            )
+            # DataLoader → dynamic_batch_sampler or sorted_dynamic_batch_sampler → collator
+            if config.sort_batch_buffer_size > 0:
+                sampler = sorted_dynamic_batch_sampler(
+                    loader,
+                    max_tokens=config.max_tokens_per_batch,
+                    buffer_size=config.sort_batch_buffer_size,
+                )
+            else:
+                sampler = dynamic_batch_sampler(
+                    loader, max_tokens=config.max_tokens_per_batch,
+                )
             base_iter = (self.collator(batch) for batch in sampler)
             return _PrefetchIterator(
                 base_iter,
@@ -474,9 +532,16 @@ class Trainer:
             )
         else:
             # シングルプロセス (従来方式)
-            sampler = dynamic_batch_sampler(
-                dataset, max_tokens=config.max_tokens_per_batch,
-            )
+            if config.sort_batch_buffer_size > 0:
+                sampler = sorted_dynamic_batch_sampler(
+                    dataset,
+                    max_tokens=config.max_tokens_per_batch,
+                    buffer_size=config.sort_batch_buffer_size,
+                )
+            else:
+                sampler = dynamic_batch_sampler(
+                    dataset, max_tokens=config.max_tokens_per_batch,
+                )
             base_iter = (self.collator(batch) for batch in sampler)
             return _PrefetchIterator(
                 base_iter,
@@ -553,7 +618,26 @@ class Trainer:
             if mismatches:
                 logger.warning("Model config mismatch between checkpoint and current config: %s", mismatches)
 
-        model_to_load.load_state_dict(checkpoint["model_state_dict"])
+        state_dict = checkpoint["model_state_dict"]
+
+        # 旧チェックポイントのキー互換性: batch_norm → norm (convolution.py リネーム対応)
+        remapped = {}
+        needs_remap = False
+        for key, value in state_dict.items():
+            new_key = key.replace(".conv.batch_norm.", ".conv.norm.")
+            if new_key != key:
+                needs_remap = True
+            remapped[new_key] = value
+        if needs_remap:
+            logger.warning("Remapped old checkpoint keys: .conv.batch_norm.* -> .conv.norm.*")
+            state_dict = remapped
+
+        model_to_load.load_state_dict(state_dict)
+
+        # pretrained_weights_only: モデル重みのみ復元 (optimizer/scheduler はリセット)
+        if self.training_config.pretrained_weights_only:
+            logger.info("Loaded pretrained weights only from step %d (optimizer/scheduler reset)", step)
+            return 0
 
         # Optimizer/Scheduler state_dict 復元
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])

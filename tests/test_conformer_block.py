@@ -156,7 +156,9 @@ def test_sdpa_forward_shape():
 
 
 def test_sdpa_numerical_equivalence():
-    """SDPA ON/OFF should produce approximately equal outputs."""
+    """SDPA ON/OFF should produce approximately equal outputs with chunk mask."""
+    from cc_g2pnp.model.attention import create_chunk_mask
+
     torch.manual_seed(0)
     config_off = _small_config(use_flash_attention=False)
     block_off = ConformerBlock(config_off)
@@ -169,8 +171,33 @@ def test_sdpa_numerical_equivalence():
 
     x = _make_input(2, 16)
     pos_enc = _make_pos_enc(16)
-    mask = torch.ones(16, 16, dtype=torch.bool)
+    # Use proper chunk mask (consistent with chunk_sdpa KV window restriction)
+    mask = create_chunk_mask(
+        seq_len=16,
+        chunk_size=config_off.chunk_size,
+        past_context=config_off.past_context,
+    )
 
     out_off = block_off(x, pos_enc, mask=mask)
     out_on = block_on(x, pos_enc, mask=mask)
+    assert torch.allclose(out_off, out_on, atol=1e-5)
+
+
+def test_sdpa_numerical_equivalence_no_mask():
+    """SDPA ON/OFF should produce equal outputs without mask (full attention)."""
+    torch.manual_seed(0)
+    config_off = _small_config(use_flash_attention=False)
+    block_off = ConformerBlock(config_off)
+    block_off.eval()
+
+    torch.manual_seed(0)
+    config_on = _small_config(use_flash_attention=True)
+    block_on = ConformerBlock(config_on)
+    block_on.eval()
+
+    x = _make_input(2, 16)
+    pos_enc = _make_pos_enc(16)
+
+    out_off = block_off(x, pos_enc, mask=None)
+    out_on = block_on(x, pos_enc, mask=None)
     assert torch.allclose(out_off, out_on, atol=1e-5)

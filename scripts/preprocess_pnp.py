@@ -85,18 +85,34 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=1000, help="LMDB write batch size")
     parser.add_argument("--max-samples", type=int, default=None, help="Max samples to process")
     parser.add_argument("--num-workers", type=int, default=0, help="並列ワーカー数 (0=シングルプロセス)")
+    parser.add_argument("--mp-context", type=str, default="fork",
+                        choices=["fork", "forkserver", "spawn"],
+                        help="マルチプロセス起動方式 (CUDA不使用時は fork が最速)")
     parser.add_argument("--resume", action="store_true", help="既存キャッシュのエントリをスキップ")
+    parser.add_argument("--local-dataset-dir", type=str, default=None,
+                        help="ローカル Parquet ディレクトリ (download_text.py の出力)")
     args = parser.parse_args()
 
     Path(args.output).mkdir(parents=True, exist_ok=True)
 
-    ds = load_dataset(
-        "reazon-research/reazonspeech",
-        args.subset,
-        split="train",
-        streaming=True,
-        trust_remote_code=True,  # セキュリティリスク: 信頼済みの公式データセットのみに使用すること
-    ).select_columns(["transcription"])
+    if args.local_dataset_dir:
+        import glob as glob_mod
+
+        parquet_dir = Path(args.local_dataset_dir) / args.subset
+        data_files = sorted(glob_mod.glob(str(parquet_dir / "*.parquet")))
+        if not data_files:
+            msg = f"No parquet files found in {parquet_dir}"
+            raise FileNotFoundError(msg)
+        logging.info("Loading local Parquet: %s (%d files)", parquet_dir, len(data_files))
+        ds = load_dataset("parquet", data_files=data_files, split="train")
+    else:
+        ds = load_dataset(
+            "reazon-research/reazonspeech",
+            args.subset,
+            split="train",
+            streaming=True,
+            trust_remote_code=True,  # セキュリティリスク: 信頼済みの公式データセットのみに使用すること
+        ).select_columns(["transcription"])
 
     cache = PnPLabelCache(args.output, readonly=False)
     batch: list[tuple[str, list[int]]] = []
@@ -109,9 +125,9 @@ def main() -> None:
         if args.num_workers > 0:
             import multiprocessing
 
-            ctx = multiprocessing.get_context("forkserver")
+            ctx = multiprocessing.get_context(args.mp_context)
             with ctx.Pool(processes=args.num_workers, initializer=_worker_init_with_cache) as pool:
-                for result in pool.imap_unordered(_process_text_cached, text_iter, chunksize=64):
+                for result in pool.imap_unordered(_process_text_cached, text_iter, chunksize=128):
                     total += 1
                     pbar.update(1)
                     if result is None:

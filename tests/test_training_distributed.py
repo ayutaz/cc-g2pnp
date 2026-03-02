@@ -227,6 +227,8 @@ class TestWrapModelDDP:
             device_ids=[0],
             find_unused_parameters=False,
             bucket_cap_mb=50,
+            static_graph=True,
+            gradient_as_bucket_view=True,
         )
         assert result is mock_ddp_cls.return_value
 
@@ -242,19 +244,78 @@ class TestWrapModelDDP:
             device_ids=[3],
             find_unused_parameters=False,
             bucket_cap_mb=50,
+            static_graph=True,
+            gradient_as_bucket_view=True,
         )
 
     @patch("cc_g2pnp.training.distributed.DistributedDataParallel")
-    def test_wrap_model_ddp_bucket_cap_mb(self, mock_ddp_cls):
-        """bucket_cap_mb パラメータが正しく設定されること。"""
+    def test_wrap_model_ddp_bucket_cap_mb_default_is_50(self, mock_ddp_cls):
+        """bucket_cap_mb デフォルトが 50 であること。"""
         model = MagicMock(spec=torch.nn.Module)
         mock_ddp_cls.return_value = MagicMock()
 
         wrap_model_ddp(model, device_id=0)
+
+        _, kwargs = mock_ddp_cls.call_args
+        assert kwargs["bucket_cap_mb"] == 50
+
+    @patch("cc_g2pnp.training.distributed.DistributedDataParallel")
+    def test_wrap_model_ddp_static_graph_default_is_true(self, mock_ddp_cls):
+        """static_graph デフォルトが True であること。"""
+        model = MagicMock(spec=torch.nn.Module)
+        mock_ddp_cls.return_value = MagicMock()
+
+        wrap_model_ddp(model, device_id=0)
+
+        _, kwargs = mock_ddp_cls.call_args
+        assert kwargs["static_graph"] is True
+
+    @patch("cc_g2pnp.training.distributed.DistributedDataParallel")
+    def test_wrap_model_ddp_gradient_as_bucket_view_default_is_true(self, mock_ddp_cls):
+        """gradient_as_bucket_view デフォルトが True であること。"""
+        model = MagicMock(spec=torch.nn.Module)
+        mock_ddp_cls.return_value = MagicMock()
+
+        wrap_model_ddp(model, device_id=0)
+
+        _, kwargs = mock_ddp_cls.call_args
+        assert kwargs["gradient_as_bucket_view"] is True
+
+    @patch("cc_g2pnp.training.distributed.DistributedDataParallel")
+    def test_wrap_model_ddp_backward_compat_bucket_cap_mb_50(self, mock_ddp_cls):
+        """後方互換: bucket_cap_mb=50 を明示指定できること。"""
+        model = MagicMock(spec=torch.nn.Module)
+        mock_ddp_cls.return_value = MagicMock()
+
+        wrap_model_ddp(model, device_id=0, bucket_cap_mb=50)
 
         mock_ddp_cls.assert_called_once_with(
             model,
             device_ids=[0],
             find_unused_parameters=False,
             bucket_cap_mb=50,
+            static_graph=True,
+            gradient_as_bucket_view=True,
         )
+
+    @patch("cc_g2pnp.training.distributed.DistributedDataParallel")
+    def test_wrap_model_ddp_override_static_graph(self, mock_ddp_cls):
+        """static_graph=False を明示指定できること。"""
+        model = MagicMock(spec=torch.nn.Module)
+        mock_ddp_cls.return_value = MagicMock()
+
+        wrap_model_ddp(model, device_id=0, static_graph=False)
+
+        _, kwargs = mock_ddp_cls.call_args
+        assert kwargs["static_graph"] is False
+
+    @patch("cc_g2pnp.training.distributed.DistributedDataParallel")
+    def test_wrap_model_ddp_override_gradient_as_bucket_view(self, mock_ddp_cls):
+        """gradient_as_bucket_view=False を明示指定できること。"""
+        model = MagicMock(spec=torch.nn.Module)
+        mock_ddp_cls.return_value = MagicMock()
+
+        wrap_model_ddp(model, device_id=0, gradient_as_bucket_view=False)
+
+        _, kwargs = mock_ddp_cls.call_args
+        assert kwargs["gradient_as_bucket_view"] is False
