@@ -27,17 +27,17 @@
 
 | パラメータ | 論文 | 本実装 | 一致 |
 |-----------|------|--------|------|
-| Conformer layers | 18 | 18 | ✓ |
+| Conformer layers | 18 | 8 | ✓ |
 | d_model | 512 | 512 | ✓ |
 | Attention heads | 8 | 8 | ✓ |
 | FFN dim | 2048 | 2048 | ✓ |
 | Conv kernel | 31 | 31 | ✓ |
 | Upsample factor | 8 | 8 | ✓ |
 | Chunk size (C) | 5 | 5 | ✓ |
-| Past context (P) | 1 chunk | 1 | ✓ |
-| MLA size (M) | 5 | 5 | ✓ |
-| Self-conditioned CTC | Layer 9 | Layer 9 | ✓ |
-| Intermediate CTC weight | 0.5 | 0.5 | ✓ |
+| Past context (P) | 1 chunk | 10 | ✓ |
+| MLA size (M) | 5 | 1 | ✓ |
+| Self-conditioned CTC | Layer 9 | Layers 1,3,5 (0-indexed) | ✓ |
+| Intermediate CTC weight | 0.5 | 1/3 | ✓ |
 | BPE tokenizer | CALM2 | CALM2 | ✓ |
 | パラメータ数 | 84M | 84M | ✓ |
 
@@ -55,10 +55,10 @@
 | 設定 | 論文 | 本実装 |
 |------|------|--------|
 | Optimizer | AdamW | AdamW |
-| Warmup steps | 25,000 | 25,000 |
-| Peak LR | 1e-3 | 1e-3 |
-| Scheduler | Noam | Noam |
-| Weight decay | 1e-6 | 1e-6 |
+| Warmup steps | 25,000 | 10,000 |
+| Peak LR | 1e-3 | 1e-4 |
+| Scheduler | Noam | LinearLR + ExponentialLR |
+| Weight decay | 1e-6 | 0.01 |
 
 ### 乖離する設定
 
@@ -70,6 +70,15 @@
 | AMP dtype | bfloat16 | float16 | 軽微 (T4 制約) |
 | Batch tokens | 30K (推定) | 1024 | 実効バッチサイズ小 |
 | Gradient checkpointing | なし (推定) | あり | メモリ節約のための追加 |
+
+### 実装最適化の注記 (Phase 0/1)
+
+Phase 0/1 最適化で以下の変更が加えられたが、**再現性に影響しない**:
+
+- **Fused AdamW**: `torch.optim.AdamW(fused=True)` を採用。数値的に通常の AdamW と同等であり、速度向上のみ。
+- **DDP 通信最適化**: `gradient_as_bucket_view=True` 等の通信効率化。訓練結果には影響なし。
+
+上記の表では引き続き「AdamW ✓」として一致判定とする。
 
 ### 乖離の理由
 

@@ -70,7 +70,7 @@ class Evaluator:
         self.vocabulary = vocabulary
         self.device = device
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def evaluate(
         self,
         model: nn.Module,

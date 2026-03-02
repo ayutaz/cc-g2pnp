@@ -307,3 +307,28 @@ class TestTrainingConfigProperties:
     def test_scheduler_gamma_less_than_one(self) -> None:
         cfg = TrainingConfig()
         assert 0.0 < cfg.scheduler_gamma < 1.0
+
+
+class TestMultiprocessingContext:
+    """Test multiprocessing_context validation."""
+
+    def test_default_multiprocessing_context(self) -> None:
+        cfg = TrainingConfig()
+        assert cfg.multiprocessing_context == "forkserver"
+
+    def test_valid_multiprocessing_context_values(self) -> None:
+        for ctx in ("fork", "forkserver", "spawn"):
+            cfg = TrainingConfig(multiprocessing_context=ctx)
+            assert cfg.multiprocessing_context == ctx
+
+    def test_invalid_multiprocessing_context(self) -> None:
+        with pytest.raises(ValueError, match="multiprocessing_context must be one of"):
+            TrainingConfig(multiprocessing_context="invalid")
+
+    def test_num_workers_negative_rejected(self) -> None:
+        with pytest.raises(ValueError, match="num_workers must be >= 0"):
+            TrainingConfig(num_workers=-1)
+
+    def test_num_workers_zero_valid(self) -> None:
+        cfg = TrainingConfig(num_workers=0)
+        assert cfg.num_workers == 0

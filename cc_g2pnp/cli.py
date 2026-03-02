@@ -47,12 +47,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-input-len", type=int, default=512, help="Maximum BPE token length per sample (T4: use 128)")
     parser.add_argument("--dataset-subset", type=str, default="all", help="ReazonSpeech dataset subset name")
     parser.add_argument("--num-workers", type=int, default=4, help="DataLoader worker processes for parallel preprocessing")
+    parser.add_argument("--mp-context", type=str, default="forkserver",
+                        choices=["fork", "forkserver", "spawn"],
+                        help="Multiprocessing start method for DataLoader workers")
     parser.add_argument("--prefetch-count", type=int, default=4, help="Number of batches to prefetch in background")
 
     # Checkpoint
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints", help="Directory to save checkpoints")
     parser.add_argument("--save-every", type=int, default=10_000, help="Save checkpoint every N steps")
     parser.add_argument("--keep-last", type=int, default=5, help="Number of most recent checkpoints to keep")
+    parser.add_argument("--no-async-checkpoint", action="store_false", dest="async_checkpoint",
+                        help="Disable async checkpoint saving")
+    parser.set_defaults(async_checkpoint=True)
+
+    # LMDB cache
+    parser.add_argument("--lmdb-cache-dir", type=str, default=None,
+                        help="LMDB directory with pre-computed PnP labels")
 
     # Logging
     parser.add_argument("--log-every", type=int, default=100, help="Log metrics every N steps")
@@ -68,6 +78,10 @@ def parse_args() -> argparse.Namespace:
 
     # DDP
     parser.add_argument("--ddp", action="store_true", help="Enable DistributedDataParallel training")
+
+    # SDPA
+    parser.add_argument("--use-flash-attention", action="store_true",
+                        help="Enable SDPA backend (Memory-Efficient on T4, recommended with --amp-dtype float16)")
 
     # Validation
     parser.add_argument("--val-every", type=int, default=5_000, help="Run validation every N steps")
@@ -85,6 +99,8 @@ def main() -> None:
     from cc_g2pnp._patch_pyopenjtalk import apply as _patch_pyopenjtalk
 
     load_dotenv()
+    # CUDA メモリフラグメンテーション低減
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     _patch_pyopenjtalk()
 
     args = parse_args()
@@ -96,7 +112,7 @@ def main() -> None:
         rank = 0
         world_size = 1
 
-    model_config = CC_G2PnPConfig()
+    model_config = CC_G2PnPConfig(use_flash_attention=args.use_flash_attention)
 
     training_config = TrainingConfig(
         learning_rate=args.lr,
@@ -111,6 +127,7 @@ def main() -> None:
         max_input_len=args.max_input_len,
         dataset_subset=args.dataset_subset,
         num_workers=args.num_workers,
+        multiprocessing_context=args.mp_context,
         prefetch_count=args.prefetch_count,
         checkpoint_dir=args.checkpoint_dir,
         save_every_n_steps=args.save_every,
@@ -123,6 +140,8 @@ def main() -> None:
         use_ddp=args.ddp,
         val_every_n_steps=args.val_every,
         seed=args.seed,
+        lmdb_cache_dir=args.lmdb_cache_dir,
+        async_checkpoint=args.async_checkpoint,
     )
 
     trainer = Trainer(model_config, training_config, rank=rank, world_size=world_size)

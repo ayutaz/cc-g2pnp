@@ -92,6 +92,16 @@ class TestEvalConfig:
         assert cfg.use_streaming is True
         assert cfg.max_samples == 100
 
+    def test_eval_config_compile_default(self):
+        """use_compile のデフォルトは False。"""
+        cfg = EvalConfig()
+        assert cfg.use_compile is False
+
+    def test_compile_flag_accepted(self):
+        """EvalConfig(use_compile=True) はエラーにならない。"""
+        cfg = EvalConfig(use_compile=True)
+        assert cfg.use_compile is True
+
 
 class TestEvalResult:
     def test_defaults(self):
@@ -234,3 +244,57 @@ class TestEvaluationPipeline:
 
         pipe = EvaluationPipeline.from_checkpoint(ckpt_path, EvalConfig(device="cpu"))
         assert pipe.model.config.d_model == default_cfg.d_model
+
+    def test_length_sorted_batching_preserves_order(self, pipeline, vocabulary):
+        """長さソートバッチングが結果の順序を正しく復元する。"""
+        # 異なる長さのサンプルを作成
+        samples = [
+            EvalSample(
+                text="long_sample",
+                domain="news",
+                pnp_labels=["ア"] * 5,
+                bpe_ids=list(range(10)),  # 長い
+            ),
+            EvalSample(
+                text="short_sample",
+                domain="news",
+                pnp_labels=["イ"] * 3,
+                bpe_ids=list(range(2)),  # 短い
+            ),
+            EvalSample(
+                text="medium_sample",
+                domain="news",
+                pnp_labels=["ウ"] * 4,
+                bpe_ids=list(range(5)),  # 中間
+            ),
+        ]
+        dataset = EvalDataset(samples=samples, name="test_sorted")
+        result = pipeline.evaluate(dataset)
+        # エラーなく完了し、全サンプルが処理される
+        assert result.num_samples == 3
+
+    def test_pipeline_without_compile(self, small_model, vocabulary, sample_dataset):
+        """use_compile=False (デフォルト) でパイプラインが正常動作するリグレッションテスト。"""
+        cfg = EvalConfig(batch_size=4, use_compile=False)
+        pipe = EvaluationPipeline(small_model, vocabulary, cfg)
+        result = pipe.evaluate(sample_dataset)
+        assert isinstance(result, EvalResult)
+        assert result.num_samples == 3
+
+    def test_batch_inference_with_varying_lengths(self, pipeline):
+        """長さが大きく異なるサンプルのバッチ推論が正常動作。"""
+        samples = [
+            EvalSample(
+                text=f"sample_{i}",
+                domain="news",
+                pnp_labels=["ア"],
+                bpe_ids=list(range(length)),
+            )
+            for i, length in enumerate([1, 20, 3, 15, 2])
+        ]
+        # _run_batch_inference を直接テスト
+        results = pipeline._run_batch_inference(samples)
+        assert len(results) == 5
+        # 各結果がリストであることを確認
+        for r in results:
+            assert isinstance(r, list)

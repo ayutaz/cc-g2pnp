@@ -316,6 +316,83 @@ class TestScalerStateDictSave:
         assert ckpt["scaler_state_dict"] is None
 
 
+class TestAsyncSave:
+    """非同期チェックポイント保存のテスト。"""
+
+    def test_async_save_creates_file(self, tmp_path):
+        """非同期保存がチェックポイントファイルを作成することを確認。"""
+        mgr = CheckpointManager(tmp_path / "ckpt", async_save=True)
+        model, opt, sched, cfg = _make_components()
+
+        path = mgr.save(100, model, opt, sched, cfg)
+        mgr.wait_for_save()
+
+        assert path.exists()
+
+    def test_async_save_content(self, tmp_path):
+        """非同期保存の内容が同期保存と一致することを確認。"""
+        sync_mgr = CheckpointManager(tmp_path / "sync", async_save=False)
+        async_mgr = CheckpointManager(tmp_path / "async", async_save=True)
+        model, opt, sched, cfg = _make_components()
+        metrics = {"loss": 0.42}
+
+        sync_path = sync_mgr.save(1, model, opt, sched, cfg, metrics=metrics)
+        async_path = async_mgr.save(1, model, opt, sched, cfg, metrics=metrics)
+        async_mgr.wait_for_save()
+
+        sync_ckpt = torch.load(sync_path, weights_only=False, map_location="cpu")
+        async_ckpt = torch.load(async_path, weights_only=False, map_location="cpu")
+
+        assert async_ckpt["step"] == sync_ckpt["step"]
+        assert async_ckpt["metrics"] == sync_ckpt["metrics"]
+        assert async_ckpt["config"] == sync_ckpt["config"]
+        for key in sync_ckpt["model_state_dict"]:
+            assert torch.equal(async_ckpt["model_state_dict"][key], sync_ckpt["model_state_dict"][key])
+
+    def test_async_wait_for_save(self, tmp_path):
+        """wait_for_save がバックグラウンド保存完了まで待機することを確認。"""
+        mgr = CheckpointManager(tmp_path / "ckpt", async_save=True)
+        model, opt, sched, cfg = _make_components()
+
+        path = mgr.save(50, model, opt, sched, cfg)
+        # wait_for_save 呼び出し後はファイルが存在しているはず
+        mgr.wait_for_save()
+
+        assert path.exists()
+        assert path.stat().st_size > 0
+
+    def test_sync_save_still_works(self, tmp_path):
+        """async_save=False で従来の同期保存が機能することを確認。"""
+        mgr = CheckpointManager(tmp_path / "ckpt", async_save=False)
+        model, opt, sched, cfg = _make_components()
+
+        path = mgr.save(200, model, opt, sched, cfg, metrics={"loss": 0.1})
+
+        # 同期保存なので wait_for_save 不要でファイルが即座に存在する
+        assert path.exists()
+        ckpt = torch.load(path, weights_only=False, map_location="cpu")
+        assert ckpt["step"] == 200
+        assert ckpt["metrics"] == {"loss": 0.1}
+
+    def test_async_save_error_handling(self, tmp_path):
+        """バックグラウンドスレッドのエラーが wait_for_save で伝播することを確認。"""
+        import threading as _threading
+
+        mgr = CheckpointManager(tmp_path / "ckpt", async_save=True)
+
+        # 直接エラーをシミュレート: _save_error をセットしてスレッド終了済みにする
+        mgr._save_error = None
+        mgr._save_thread = _threading.Thread(
+            target=lambda: setattr(mgr, "_save_error", OSError("Simulated write error")),
+            daemon=True,
+        )
+        mgr._save_thread.start()
+        mgr._save_thread.join()
+
+        with pytest.raises(RuntimeError, match="Async checkpoint save failed"):
+            mgr.wait_for_save()
+
+
 class TestE2E:
     """Save -> Load -> load_state_dict の E2E テスト。"""
 

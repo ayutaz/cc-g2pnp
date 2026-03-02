@@ -48,6 +48,10 @@ class CC_G2PnPConfig:
     conv_expansion_factor: int = 2
     """Pointwise conv expansion for GLU: d_model → d_model*2 → GLU → d_model."""
 
+    use_groupnorm: bool = False
+    """Use GroupNorm instead of BatchNorm in ConformerConvModule.
+    Reduces DDP sync overhead (+3-8%) and improves fp16 stability."""
+
     # ── Streaming ───────────────────────────────────────────────
     chunk_size: int = 5
     """Chunk size C for streaming attention (paper: 2 or 5)."""
@@ -67,6 +71,12 @@ class CC_G2PnPConfig:
     intermediate_ctc_weight: float = 1.0 / 3.0
     """Weight for each intermediate CTC loss term.
     Total loss = final_CTC + weight * sum(intermediate_CTC_losses)."""
+
+    # ── Attention backend ───────────────────────────────────────
+    use_flash_attention: bool = False
+    """Use F.scaled_dot_product_attention instead of manual matmul+softmax.
+    Enables EFFICIENT_ATTENTION kernel on T4 (sm75+) for ~10-20% speedup.
+    Checkpoint-compatible (no weight shape changes)."""
 
     # ── Regularization ──────────────────────────────────────────
     dropout: float = 0.1
@@ -89,6 +99,18 @@ class CC_G2PnPConfig:
             raise ValueError(msg)
         if self.num_layers <= 0:
             msg = f"num_layers must be positive, got {self.num_layers}"
+            raise ValueError(msg)
+        if self.conv_expansion_factor != 2:
+            msg = f"conv_expansion_factor must be 2 (required by GLU), got {self.conv_expansion_factor}"
+            raise ValueError(msg)
+        if self.chunk_size <= 0:
+            msg = f"chunk_size must be positive, got {self.chunk_size}"
+            raise ValueError(msg)
+        if self.past_context < 0:
+            msg = f"past_context must be >= 0, got {self.past_context}"
+            raise ValueError(msg)
+        if self.mla_size < 0:
+            msg = f"mla_size must be >= 0, got {self.mla_size}"
             raise ValueError(msg)
         for layer_idx in self.intermediate_ctc_layers:
             if layer_idx >= self.num_layers:

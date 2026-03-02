@@ -172,3 +172,26 @@ def test_ctc_projection_shared():
     assert encoder.ctc_projection.out_features == 140
     assert encoder.ctc_to_hidden.in_features == 140
     assert encoder.ctc_to_hidden.out_features == 64
+
+
+def test_sdpa_encoder_forward():
+    """Encoder with use_flash_attention=True should produce correct output shape."""
+    config = _small_config(use_flash_attention=True)
+    encoder = ConformerEncoder(config)
+    encoder.eval()
+    x = _make_input(2, 16)
+    result = encoder(x)
+    assert result["output"].shape == (2, 16, 64)
+    assert "intermediate_logits" in result
+
+
+def test_sdpa_encoder_no_nan():
+    """Encoder with SDPA should not produce NaN values."""
+    config = _small_config(use_flash_attention=True)
+    encoder = ConformerEncoder(config)
+    encoder.eval()
+    x = _make_input(2, 20)
+    result = encoder(x)
+    assert not torch.isnan(result["output"]).any()
+    for logits in result["intermediate_logits"]:
+        assert not torch.isnan(logits).any()

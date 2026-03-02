@@ -28,6 +28,7 @@ class EvalConfig:
     device: str = "cpu"
     use_streaming: bool = False
     max_samples: int | None = None
+    use_compile: bool = False
 
 
 @dataclass
@@ -60,6 +61,14 @@ class EvaluationPipeline:
         self.model.to(self._device)
         self.model.eval()
 
+        # Optional torch.compile for inference speedup (+30-50% on supported backends)
+        if self.config.use_compile:
+            try:
+                self.model = torch.compile(self.model, mode="reduce-overhead")
+                logger.info("Model compiled with torch.compile(mode='reduce-overhead')")
+            except Exception:
+                logger.warning("torch.compile failed, falling back to eager mode", exc_info=True)
+
     def _decode_ids_to_tokens(self, id_sequences: list[list[int]]) -> list[list[str]]:
         """Convert predicted ID sequences to PnP token sequences.
 
@@ -83,9 +92,18 @@ class EvaluationPipeline:
     ) -> list[list[str]]:
         """Run model inference on a batch of samples.
 
-        Pads BPE IDs to max length, runs model.inference(), decodes results.
+        Sorts samples by BPE ID length to minimize padding waste,
+        runs inference with optional FP16 autocast, then restores
+        original order.
         """
-        bpe_ids_list = [s.bpe_ids for s in samples]
+        # Sort by length for efficient padding
+        indexed_samples = sorted(
+            enumerate(samples), key=lambda x: len(x[1].bpe_ids),
+        )
+        original_indices = [i for i, _ in indexed_samples]
+        sorted_samples = [s for _, s in indexed_samples]
+
+        bpe_ids_list = [s.bpe_ids for s in sorted_samples]
         max_len = max(len(ids) for ids in bpe_ids_list)
 
         # Pad sequences
@@ -98,11 +116,23 @@ class EvaluationPipeline:
         input_ids = torch.tensor(padded, dtype=torch.long, device=self._device)
         input_lengths = torch.tensor(lengths, dtype=torch.long, device=self._device)
 
-        # Run inference
-        with torch.no_grad():
+        # Run inference with optional FP16 autocast
+        use_amp = self._device.type == "cuda"
+        with torch.inference_mode(), torch.amp.autocast(
+            device_type=self._device.type,
+            dtype=torch.float16,
+            enabled=use_amp,
+        ):
             predicted_ids = self.model.inference(input_ids, input_lengths)
 
-        return self._decode_ids_to_tokens(predicted_ids)
+        sorted_results = self._decode_ids_to_tokens(predicted_ids)
+
+        # Restore original order
+        results = [None] * len(samples)
+        for sorted_idx, orig_idx in enumerate(original_indices):
+            results[orig_idx] = sorted_results[sorted_idx]
+
+        return results
 
     def _run_streaming_inference(
         self,
@@ -192,6 +222,9 @@ class EvaluationPipeline:
         """Create pipeline from a saved checkpoint.
 
         Loads model config and weights from checkpoint.
+
+        セキュリティ警告: 信頼できるソースのチェックポイントのみ読み込むこと。
+        未検証の外部ファイルを渡すと pickle 任意コード実行のリスクがある。
         """
         from pathlib import Path as _Path
 

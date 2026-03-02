@@ -67,8 +67,9 @@ LLM → BPEトークンID [B, T]
    - 出力: `x + Dropout(MHSA(x))`
 
 3. **Convolution Module** (causal depthwise conv)
-   - LayerNorm → Pointwise Conv(512→1024) → GLU → Depthwise Conv1D(kernel=31) → BatchNorm → Swish → Pointwise Conv(512→512) → Dropout
+   - LayerNorm → Pointwise Conv(512→1024) → GLU → Depthwise Conv1D(kernel=31) → BatchNorm/GroupNorm (`use_groupnorm` フラグで切替) → Swish → Pointwise Conv(512→512) → Dropout
    - Convolution expansion factor = 2（GLU前に2倍に拡張）
+   - `use_groupnorm=True` 時: GroupNorm(32グループ, d=512) を使用。DDP の同期オーバーヘッドを削減し fp16 安定性が向上。チェックポイントは BatchNorm/GroupNorm 間で非互換
 
 4. **Feed-Forward Module 2** (half-step residual, factor=0.5)
    - FFN1と同一構造
@@ -432,18 +433,20 @@ CC-G2PnP論文のPnP系列生成の参考実装として有用。
 - **CC-G2PnPとの関連**: U2フレームワーク（streaming/non-streaming統一）
 - **再現実装での有用性**: 統一アーキテクチャの設計パターンの参考
 
-### 4.5 推奨方針 → 実装完了 (Phase 0-5)
+### 4.5 推奨方針 → 実装完了 (Phase 0-5 + FlashAttention + Phase 2最適化)
 
 既存フレームワークを**参考**にしつつ、**PyTorchベースでスクラッチ実装**済み:
 - NeMoからchunk-aware streamingのマスク生成パターンを参考 → `create_chunk_mask`/`create_mla_mask` (vectorized)
 - ESPnetからSelf-conditioned CTCの実装を参考 → `ConformerEncoder` に中間CTC+フィードバック実装
 - ESPnet Issue #4031を参考にDDP設定 → `find_unused_parameters=True`
 - SpeechBrainからDynamic Chunk Trainingのパターンを参考
-- 学習パイプライン: Trainer + TrainingConfig + AdamW (decay/no_decay) + ExponentialLR + CheckpointManager + DDP + AMP + W&B (必須)
-- ストリーミング推論: Conv cache + KV cache + MLA look-ahead
-- 評価パイプライン: 6メトリクス (`jiwer.wer` ベース) + 4ドメインビルトインデータ + batch/streaming推論
+- 学習パイプライン: Trainer + TrainingConfig + AdamW (decay/no_decay, **fused AdamW対応 Phase 1最適化**) + ExponentialLR + CheckpointManager (**非同期保存 `async_checkpoint` フラグ Phase 2最適化**) + DDP (**find_unused_parameters=True, static_graph最適化**) + AMP + W&B (必須)
+- ストリーミング推論: Conv cache + KV cache + MLA look-ahead (**torch.inference_mode()使用 Phase 0最適化**)
+- 評価パイプライン: 6メトリクス (`jiwer.wer` ベース) + 4ドメインビルトインデータ + batch/streaming推論 + **torch.compile オプション (`use_compile` フラグ, +30-50% 推論高速化) Phase 2最適化** + FP16 autocast（CUDA時）+ 長さソートバッチング
+- データパイプライン: **ネットワークエラーリトライロジック実装済み** (exponential backoff) + **PnP ラベル LMDB キャッシュ (`PnPLabelCache`) Phase 2最適化** → GPU利用率を大幅改善
+- アテンション: `use_flash_attention=True` で **チャンク分割 SDPA (`_forward_chunk_sdpa`) Phase 2最適化** → O(T×(C+P+M)) メモリ (O(T²) より大幅削減)
 - 外部フレームワークへの依存なし（PyTorch標準のみ）、論文仕様を忠実に再現
-- 458テスト PASS、ruff clean
+- 529テスト PASS、ruff clean (FlashAttention SDPA + Phase 2最適化テスト含む)
 
 ---
 
@@ -484,7 +487,7 @@ CC-G2PnP論文のPnP系列生成の参考実装として有用。
 
 ### 5.4 論文コードの公開状況
 
-- **CC-G2PnPのコードは未公開**（2026年2月時点、提出直後のため）→ **本リポジトリで再現実装中** (Phase 5完了: モデルコア84M params + 学習パイプライン + ストリーミング推論 + 評価パイプライン、458テスト PASS)
+- **CC-G2PnPのコードは未公開**（2026年2月時点、提出直後のため）→ **本リポジトリで再現実装中** (Phase 5+最適化完了: モデルコア84M params + 学習パイプライン + ストリーミング推論 + 評価パイプライン + Phase 2最適化, 529テスト PASS)
 - **Dict-DNN韻律予測モデルも未公開**（Park et al., Interspeech 2022）→ pyopenjtalk full-context label解析で代替実装済み
 - **6D-Eval評価データセットも未公開**
 - 今後r9y9のGitHubリポジトリで公開される可能性あり
@@ -741,7 +744,7 @@ fugashi[unidic]             # MeCab + UniDic (形態素解析)
 pyopenjtalk-plus>=0.4.1     # G2P + Full-context labels（Python 3.13 Windows対応フォーク）
 
 # Training
-wandb>=0.16.0               # 学習監視（必須、未ログイン時は RuntimeError）
+wandb>=0.15.0               # 学習監視（必須、未ログイン時は RuntimeError）
 
 # Evaluation
 jiwer>=3.0.0                # CER/WER計算

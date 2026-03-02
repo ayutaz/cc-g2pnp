@@ -43,15 +43,16 @@ cc_g2pnp/
 │   ├── pnp_labeler.py     # PnPラベル生成 (HTS→カタカナ+韻律)
 │   ├── tokenizer.py       # CALM2 BPEトークナイザラッパー
 │   ├── dataset.py         # ReazonSpeech streaming IterableDataset
-│   └── collator.py        # Dynamic Batching + パディング
+│   ├── collator.py        # Dynamic Batching + パディング
+│   └── lmdb_cache.py      # PnP ラベル LMDB キャッシュ
 ├── model/             # モデル定義 (Phase 2 ✅)
 │   ├── __init__.py          # 15 public exports
-│   ├── config.py            # CC_G2PnPConfig dataclass
-│   ├── embedding.py         # TokenEmbedding (BPE → D, repeat_interleave ×8)
+│   ├── config.py            # CC_G2PnPConfig dataclass (use_flash_attention, use_groupnorm フラグ含む)
+│   ├── embedding.py         # TokenEmbedding (BPE → D, expand+contiguous ×8)
 │   ├── positional_encoding.py # RelativePositionalEncoding (sinusoidal)
-│   ├── attention.py         # ChunkAwareAttention + create_chunk_mask/mla_mask + forward_streaming
+│   ├── attention.py         # ChunkAwareAttention + create_chunk_mask/mla_mask + forward_streaming + _forward_sdpa/_forward_chunk_sdpa (SDPA対応)
 │   ├── feed_forward.py      # FeedForwardModule (Macaron half-step)
-│   ├── convolution.py       # ConformerConvModule (causal depthwise conv) + forward_streaming
+│   ├── convolution.py       # ConformerConvModule (causal depthwise conv) + forward_streaming + GroupNorm対応 (use_groupnorm)
 │   ├── conformer_block.py   # ConformerBlock (FFN→MHSA→Conv→FFN→LN) + forward_streaming
 │   ├── encoder.py           # ConformerEncoder (8層 + self-conditioned CTC) + EncoderStreamingState + forward_streaming
 │   ├── ctc_decoder.py       # CTCHead + greedy_decode
@@ -76,13 +77,16 @@ cc_g2pnp/
 │   └── pipeline.py        # EvaluationPipeline (batch/streaming推論 → メトリクス計算)
 └── utils/
 scripts/
-└── train.py               # argparse CLIエントリポイント (Phase 3 ✅)
+├── train.py               # argparse CLIエントリポイント (Phase 3 ✅)
+├── preprocess_pnp.py      # PnP ラベル LMDB キャッシュ生成スクリプト (Phase 2-opt ✅)
+├── evaluate.py            # 推論デモ + 評価パイプライン実行スクリプト
+└── verify_ddp.py          # DDP 動作検証スクリプト (torchrun)
 tests/
 ├── test_g2p.py            # pyopenjtalk/fugashi基本テスト (5件)
 ├── test_tokenizer.py      # CALM2トークナイザテスト (6件)
 ├── test_data_loading.py   # ReazonSpeechロードテスト (3件, network)
 ├── test_vocabulary.py     # CTC語彙テスト (8件)
-├── test_pnp_labeler.py    # PnPラベル生成テスト (9件)
+├── test_pnp_labeler.py    # PnPラベル生成テスト (10件)
 ├── test_pipeline.py       # 統合テスト (7件 + 1件network)
 ├── test_dataset.py        # データセットテスト
 ├── test_collator.py       # コレータテスト
@@ -225,7 +229,7 @@ tests/
 
 | # | タスク | 詳細 | 難易度 | 状態 |
 |---|---|---|---|---|
-| 2.1 | Embedding + Token Upsampling | `Embedding(65000, 512)` + `sqrt(d_model)` scale + `repeat_interleave(×8)`。入力 [B, T] → [B, T×8, 512] | 低 | ✅ |
+| 2.1 | Embedding + Token Upsampling | `Embedding(65000, 512)` + `sqrt(d_model)` scale + `expand+contiguous(×8)`。入力 [B, T] → [B, T×8, 512] | 低 | ✅ |
 | 2.2 | Causal Convolution Module | LN→Pointwise(D→2D)→GLU→CausalDWConv(k=31)→BN→SiLU→Pointwise→Dropout | 中 | ✅ |
 | 2.3 | Chunk-aware Streaming Attention | MHSA (heads=8) + Shaw et al. 相対位置バイアス (Q*pos_K^T) + chunk-aware mask (vectorized) | **高** | ✅ |
 | 2.4 | Feed-Forward Module | LN→Linear(512→2048)→SiLU→Dropout→Linear(2048→512)→Dropout | 低 | ✅ |
@@ -263,16 +267,16 @@ tests/
 
 | ファイル | 概要 |
 |---------|------|
-| `cc_g2pnp/model/config.py` | `CC_G2PnPConfig` dataclass + `__post_init__` validation |
-| `cc_g2pnp/model/embedding.py` | `TokenEmbedding` — Embedding(65000,512) → sqrt(d_model) scale → dropout → repeat_interleave ×8 |
+| `cc_g2pnp/model/config.py` | `CC_G2PnPConfig` dataclass + `__post_init__` validation + `use_flash_attention`, `use_groupnorm` フラグ |
+| `cc_g2pnp/model/embedding.py` | `TokenEmbedding` — Embedding(65000,512) → sqrt(d_model) scale → dropout → expand+contiguous ×8 |
 | `cc_g2pnp/model/positional_encoding.py` | `RelativePositionalEncoding` — sinusoidal PE buffer, max_len=5000 |
-| `cc_g2pnp/model/attention.py` | `ChunkAwareAttention` + `create_chunk_mask` + `create_mla_mask` (vectorized) — Shaw et al. relative pos bias |
+| `cc_g2pnp/model/attention.py` | `ChunkAwareAttention` + `create_chunk_mask` + `create_mla_mask` (vectorized) — Shaw et al. relative pos bias + `_forward_sdpa` (SDPA基本, Phase 1) + `_forward_chunk_sdpa` (チャンク分割SDPA, Phase 2) |
 | `cc_g2pnp/model/feed_forward.py` | `FeedForwardModule` — LN→Linear(512→2048)→SiLU→Dropout→Linear(2048→512)→Dropout |
-| `cc_g2pnp/model/convolution.py` | `ConformerConvModule` — LN→Pointwise(D→2D)→GLU→CausalDWConv(k=31)→BN→SiLU→Pointwise→Dropout |
+| `cc_g2pnp/model/convolution.py` | `ConformerConvModule` — LN→Pointwise(D→2D)→GLU→CausalDWConv(k=31)→BN/GroupNorm→SiLU→Pointwise→Dropout (`use_groupnorm` フラグで切替) |
 | `cc_g2pnp/model/conformer_block.py` | `ConformerBlock` — x+0.5*FFN1→x+MHSA→x+Conv→x+0.5*FFN2→LN (Macaron-style) |
 | `cc_g2pnp/model/encoder.py` | `ConformerEncoder` — 8層 + self-conditioned CTC at layers 1,3,5 (0-indexed) |
 | `cc_g2pnp/model/ctc_decoder.py` | `CTCHead` (log_softmax) + `greedy_decode` (argmax→unique_consecutive→remove blanks) |
-| `cc_g2pnp/model/cc_g2pnp.py` | `CC_G2PnP` — CTC projection共有, inference uses `self()`, zero_infinity=True |
+| `cc_g2pnp/model/cc_g2pnp.py` | `CC_G2PnP` — CTC projection共有, inference uses `self()`, zero_infinity=True, 中間CTC損失をバッチ化 (単一CTCコール) |
 | `cc_g2pnp/model/__init__.py` | 15 public exports |
 | `tests/test_embedding.py` | TokenEmbedding テスト |
 | `tests/test_positional_encoding.py` | RelativePositionalEncoding テスト |
@@ -329,8 +333,8 @@ tests/
 | ファイル | 概要 |
 |---------|------|
 | `cc_g2pnp/training/config.py` | `TrainingConfig` dataclass (21フィールド) + `__post_init__` validation + `scheduler_gamma` 自動計算 |
-| `cc_g2pnp/training/optimizer.py` | `build_optimizer` (AdamW, decay/no_decay分離) + `build_scheduler` (LinearLR warmup + ExponentialLR) |
-| `cc_g2pnp/training/checkpoint.py` | `CheckpointManager` — save/load/load_latest/cleanup (keep_last_n), DDP対応 |
+| `cc_g2pnp/training/optimizer.py` | `build_optimizer` (AdamW, decay/no_decay分離, fused=True) + `build_scheduler` (LinearLR warmup + ExponentialLR) |
+| `cc_g2pnp/training/checkpoint.py` | `CheckpointManager` — save/load/load_latest/cleanup (keep_last_n), DDP対応, 非同期保存 (`async_checkpoint` フラグ), `model_config` キー保存 |
 | `cc_g2pnp/training/logger.py` | `TrainingLogger` — W&B必須、未ログイン時 RuntimeError、context manager |
 | `cc_g2pnp/training/distributed.py` | `setup_ddp`, `cleanup_ddp`, `is_main_process`, `get_rank`, `get_world_size`, `reduce_metrics`, `wrap_model_ddp` |
 | `cc_g2pnp/training/evaluator.py` | `Evaluator` — PnP CER (jiwer) + collator key mapping (labels→targets) |
@@ -352,7 +356,7 @@ tests/
 |---|---|---|
 | 学習データ | 14,960,911件 | ReazonSpeech転写テキスト |
 | バッチ構成 | 最大8,192トークン/ミニバッチ | Dynamic batching |
-| Optimizer | AdamW (decay/no_decay分離) | LayerNorm・biasはweight decay除外 |
+| Optimizer | AdamW (decay/no_decay分離, fused=True (CUDA時)) | LayerNorm・biasはweight decay除外 |
 | 初期学習率 | 1e-4 | 論文記載 |
 | 最終学習率 | 1e-5 | 論文記載 |
 | weight_decay | 0.01 | ※論文未記載。推定 |
@@ -572,10 +576,22 @@ Phase 3: 学習パイプライン            ████████ ✅ 完了
 Phase 4: 推論・ストリーミング         ████████ ✅ 完了
 Phase 5: 評価                       ████████ ✅ 完了
 Phase 6: アブレーション              ░░░░░░░░░░░░░░░░░░░░░░██ ← 次
+Phase 0-opt: ゼロコスト最適化          ████████ ✅ 完了 (7施策)
+Phase 1-opt: 低コスト最適化           ████████ ✅ 完了 (7施策)
+Phase 2-opt: 中コスト改善             ████████ ✅ 完了 (5施策)
+FlashAttention Phase 1 (SDPA)        ████████ ✅ 完了
+FlashAttention Phase 2 (チャンク分割) ████████ ✅ 完了
 ```
 
-- **Phase 0-5 全完了**（評価パイプラインまで実装済み、458テスト PASS）
+- **Phase 0-5 全完了**（評価パイプラインまで実装済み、529 テスト PASS）
+- **最適化 Phase 0-1 完了**: ゼロコスト 7施策 + 低コスト 7施策 適用済み (コミット `bce295d`, `d37a34b`)
+- **最適化 Phase 2 完了**: LMDB キャッシュ・中間 CTC バッチ化・GroupNorm・非同期チェックポイント・torch.compile (推論) 実装済み
+- **DDP バグ修正完了**: チェックポイント保存 barrier 欠如・データシャーディング未実装を修正 (コミット `4c29ee2`, `7bc3d8f`)
+- **ネットワークリトライロジック追加**: データパイプラインにネットワークエラー自動リトライを実装 (コミット `fdc645d`)
 - Phase 6 はPhase 5の評価基盤が前提 → **評価基盤整備済み、フルスケール学習後に実行可能**
+- **FlashAttention Phase 1 完了**: SDPA 基本対応 (`use_flash_attention` フラグ, `_forward_sdpa()` 実装, コミット `db12843`)
+- **FlashAttention Phase 2 完了**: チャンク分割処理 (`_forward_chunk_sdpa()` 実装), O(T^2) → O(T×C) メモリ削減
+- **次のステップ**: Phase 2-opt 高コスト改善 (ONNX/TensorRT) / FlashAttention Phase 3 (RoPE 移行)
 
 ---
 
@@ -607,5 +623,6 @@ Phase 6: アブレーション              ░░░░░░░░░░░░
 | **M3-infra: 学習基盤完成** | 3 | Trainer/Optimizer/Scheduler/Checkpoint/DDP/AMP/W&B実装完了。344テスト、88%カバレッジ | ✅ 達成 |
 | **M3: スモーク試験完了** | 3 | 10ステップ実行、損失 23.77→10.81、W&B同期OK | ✅ 達成 |
 | **M4: ストリーミング推論動作** | 4 | チャンク単位の逐次推論でPnPラベル出力。376テスト、streaming/latencyテスト完了 | ✅ 達成 |
-| **M5: 評価パイプライン完成** | 5 | 全6メトリクス計算、4ドメインビルトインデータ、batch/streaming推論→評価。458テスト | ✅ 達成 |
+| **M5: 評価パイプライン完成** | 5 | 全6メトリクス計算、4ドメインビルトインデータ、batch/streaming推論→評価。499テスト | ✅ 達成 |
+| **M5-opt: Phase 2 最適化完了** | 6-opt | LMDB キャッシュ・GroupNorm・非同期チェックポイント・torch.compile・チャンク分割 Attention 実装。529 テスト | ✅ 達成 |
 | **M6: フルスケール学習完了** | 3+6 | 100%データ・1.2Mステップでの学習完了、PnP CER ≈ 1.79（代替評価データ上） | |

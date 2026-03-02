@@ -28,7 +28,7 @@ class FeedForwardModule(nn.Module):
         super().__init__()
         self.norm = nn.LayerNorm(config.d_model)
         self.linear1 = nn.Linear(config.d_model, config.d_ff)
-        self.activation = nn.SiLU()
+        self.activation = nn.SiLU(inplace=True)
         self.dropout1 = nn.Dropout(config.dropout)
         self.linear2 = nn.Linear(config.d_ff, config.d_model)
         self.dropout2 = nn.Dropout(config.dropout)

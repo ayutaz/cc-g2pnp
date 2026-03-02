@@ -7,6 +7,7 @@ import logging
 import queue
 import random
 import threading
+import time
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _VAL_NUM_SAMPLES_KEY = frozenset({"val_num_samples"})
+_MAX_DATA_RETRIES = 10
 
 
 def _worker_init_fn(worker_id: int) -> None:
@@ -170,6 +172,7 @@ class Trainer:
         self.checkpoint_manager = CheckpointManager(
             checkpoint_dir=training_config.checkpoint_dir,
             keep_last_n=training_config.keep_last_n,
+            async_save=training_config.async_checkpoint,
         )
 
         # 9. TrainingLogger 構築 (メインプロセスのみ)
@@ -223,36 +226,55 @@ class Trainer:
             for step in range(start_step, effective_steps):
                 self.global_step = step
 
-                # バッチ取得 (StopIteration でエポック再開)
-                try:
-                    batch = next(data_iter)
-                except StopIteration:
-                    logger.info("Epoch ended at step %d, restarting data iterator", step)
-                    self._epoch += 1
-                    if hasattr(data_iter, "close"):
-                        data_iter.close()
-                    data_iter = self._create_data_iterator()
-                    batch = next(data_iter)
+                # バッチ取得 (StopIteration でエポック再開, ネットワークエラーでリトライ)
+                batch = None
+                for _retry in range(_MAX_DATA_RETRIES):
+                    try:
+                        batch = next(data_iter)
+                        break
+                    except StopIteration:
+                        logger.info("Epoch ended at step %d, restarting data iterator", step)
+                        self._epoch += 1
+                        if hasattr(data_iter, "close"):
+                            data_iter.close()
+                        data_iter = self._create_data_iterator()
+                        # 新しいイテレータへの最初の next() もネットワークエラーの可能性があるため
+                        # リトライループの先頭に戻り、既存のネットワークエラーリトライで保護する
+                        continue
+                    except (ConnectionError, OSError, TimeoutError) as exc:
+                        wait = min(2 ** _retry * 10, 300)
+                        logger.warning(
+                            "Network error at step %d (retry %d/%d): %s. "
+                            "Retrying in %ds...",
+                            step, _retry + 1, _MAX_DATA_RETRIES, exc, wait,
+                        )
+                        if hasattr(data_iter, "close"):
+                            data_iter.close()
+                        time.sleep(wait)
+                        data_iter = self._create_data_iterator()
+                if batch is None:
+                    raise RuntimeError(
+                        f"Failed to fetch batch after {_MAX_DATA_RETRIES} retries at step {step}"
+                    )
 
                 # Train step
                 step_metrics = self.train_step(batch)
 
-                # DDP メトリクス平均化
-                if config.use_ddp:
-                    step_metrics = reduce_metrics(step_metrics, self.device)
+                # ログステップ: DDP メトリクス平均化 + ログ
+                if step % config.log_every_n_steps == 0:
+                    if config.use_ddp:
+                        step_metrics = reduce_metrics(step_metrics, self.device)
+                    if self.logger is not None:
+                        self.logger.log_metrics(
+                            {
+                                "train/loss": step_metrics["loss"],
+                                "train/lr": step_metrics["lr"],
+                                "train/grad_norm": step_metrics["grad_norm"],
+                            },
+                            step=step,
+                        )
 
-                # ログ (step=0 も含む: 初期 loss の記録に有用)
-                if step % config.log_every_n_steps == 0 and self.logger is not None:
-                    self.logger.log_metrics(
-                        {
-                            "train/loss": step_metrics["loss"],
-                            "train/lr": step_metrics["lr"],
-                            "train/grad_norm": step_metrics["grad_norm"],
-                        },
-                        step=step,
-                    )
-
-                # 進捗バー更新
+                # 進捗バー更新 (ローカルメトリクスで更新)
                 if pbar is not None:
                     pbar.set_postfix(
                         loss=f"{step_metrics['loss']:.4f}",
@@ -266,9 +288,13 @@ class Trainer:
                     and step % config.val_every_n_steps == 0
                     and val_batches
                 ):
+                    if self.device.type == "cuda":
+                        torch.cuda.empty_cache()
                     val_metrics = self.evaluator.evaluate(
                         self.model, val_batches,
                     )
+                    if self.device.type == "cuda":
+                        torch.cuda.empty_cache()
                     if config.use_ddp:
                         val_metrics = reduce_metrics(
                             val_metrics, self.device,
@@ -319,6 +345,8 @@ class Trainer:
                 data_iter.close()
             if pbar is not None:
                 pbar.close()
+            if is_main_process():
+                self.checkpoint_manager.wait_for_save()
             if self.logger is not None:
                 self.logger.close()
             if config.use_ddp:
@@ -419,6 +447,7 @@ class Trainer:
             shuffle_seed=config.seed + self._epoch,
             rank=self.rank,
             world_size=self.world_size,
+            lmdb_cache_dir=config.lmdb_cache_dir,
         )
 
         if num_workers > 0:
@@ -429,7 +458,8 @@ class Trainer:
                 num_workers=num_workers,
                 worker_init_fn=_worker_init_fn,
                 prefetch_factor=config.prefetch_count,
-                persistent_workers=False,
+                persistent_workers=True,
+                multiprocessing_context=config.multiprocessing_context,
             )
             # DataLoader → dynamic_batch_sampler → collator
             sampler = dynamic_batch_sampler(
@@ -509,6 +539,18 @@ class Trainer:
         model_to_load = (
             self.model.module if hasattr(self.model, "module") else self.model
         )
+
+        saved_model_config = checkpoint.get("model_config")
+        if saved_model_config is not None:
+            current_config_dict = dataclasses.asdict(model_to_load.config)
+            mismatches = {
+                k: (saved_model_config[k], current_config_dict[k])
+                for k in saved_model_config
+                if k in current_config_dict and saved_model_config[k] != current_config_dict[k]
+            }
+            if mismatches:
+                logger.warning("Model config mismatch between checkpoint and current config: %s", mismatches)
+
         model_to_load.load_state_dict(checkpoint["model_state_dict"])
 
         # Optimizer/Scheduler state_dict 復元

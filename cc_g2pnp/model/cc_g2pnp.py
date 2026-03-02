@@ -80,20 +80,32 @@ class CC_G2PnP(nn.Module):
             upsampled_lengths = input_lengths * self.config.upsample_factor
 
             # CTCLoss expects [T, B, V]
-            log_probs_t = log_probs.transpose(0, 1)
+            log_probs_t = log_probs.transpose(0, 1).contiguous()
             final_loss = self.ctc_loss(
                 log_probs_t, targets, upsampled_lengths, target_lengths,
             )
 
-            # Intermediate CTC losses
+            # Batch intermediate CTC losses into a single CTC call to reduce overhead
             intermediate_losses: list[torch.Tensor] = []
-            for inter_logits in enc_out["intermediate_logits"]:
-                inter_log_probs = torch.log_softmax(inter_logits, dim=-1)
-                inter_log_probs_t = inter_log_probs.transpose(0, 1)
-                inter_loss = self.ctc_loss(
-                    inter_log_probs_t, targets, upsampled_lengths, target_lengths,
+            inter_logits_list = enc_out["intermediate_logits"]
+            if inter_logits_list:
+                n_inter = len(inter_logits_list)
+                # Stack [N, B, T, V] then flatten to [N*B, T, V] for a single CTC call
+                stacked = torch.stack(inter_logits_list, dim=0)
+                flat = stacked.reshape(-1, stacked.size(2), stacked.size(3))
+                flat_log_probs_t = torch.log_softmax(flat, dim=-1).transpose(0, 1).contiguous()
+                targets_rep = targets.repeat(n_inter, 1)
+                up_rep = upsampled_lengths.repeat(n_inter)
+                tgt_rep = target_lengths.repeat(n_inter)
+                # Single CTC call (reduction="none") -> [N*B] per-sample losses
+                per_sample = torch.nn.functional.ctc_loss(
+                    flat_log_probs_t, targets_rep, up_rep, tgt_rep,
+                    blank=self.config.blank_id, reduction="none", zero_infinity=True,
                 )
-                intermediate_losses.append(inter_loss)
+                # Split by layer, normalize by target length to match reduction="mean"
+                per_layer = per_sample.view(n_inter, -1)  # [N, B]
+                tgt_len_f = target_lengths.float()
+                intermediate_losses = [(per_layer[i] / tgt_len_f).mean() for i in range(n_inter)]
 
             total_loss = final_loss + self.config.intermediate_ctc_weight * sum(
                 intermediate_losses
@@ -104,7 +116,7 @@ class CC_G2PnP(nn.Module):
 
         return result
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def inference(
         self,
         input_ids: torch.Tensor,
@@ -134,7 +146,7 @@ class CC_G2PnP(nn.Module):
         device = next(self.parameters()).device
         return self.encoder.init_streaming_state(batch_size, device)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def forward_streaming(
         self,
         chunk_frames: torch.Tensor,

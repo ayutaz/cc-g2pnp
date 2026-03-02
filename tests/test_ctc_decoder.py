@@ -152,3 +152,47 @@ class TestGreedyDecode:
             log_probs[0, t, v] = 0.0
         result = greedy_decode(log_probs, blank_id=2)
         assert result == [[0, 1, 3]]
+
+    def test_large_batch_decoding(self):
+        """大きいバッチ (B=32) で正しくデコード。"""
+        B, T, V = 32, 20, 10
+        # 各シーケンスで token 1 を連続出力させる
+        log_probs = torch.full((B, T, V), -10.0)
+        log_probs[:, :, 1] = 0.0  # token 1 が最大
+        result = greedy_decode(log_probs, blank_id=0)
+        assert len(result) == B
+        # 全シーケンスが unique_consecutive で collapse → [1]
+        for seq in result:
+            assert seq == [1]
+
+    def test_long_sequence_decoding(self):
+        """長いシーケンス (T=1000) でも正しい結果。"""
+        T = 1000
+        log_probs = torch.full((1, T, 5), -10.0)
+        # 交互: 0,1,0,1,... (blank, token1, blank, token1, ...)
+        for t in range(T):
+            log_probs[0, t, t % 2] = 0.0
+        result = greedy_decode(log_probs, blank_id=0)
+        assert len(result) == 1
+        # blank を除くと全部 token 1: 500 個
+        assert result[0] == [1] * (T // 2)
+
+    def test_all_same_token(self):
+        """全フレームが同じ非ブランクトークンの場合、1トークンに collapse。"""
+        log_probs = torch.full((1, 50, 5), -10.0)
+        log_probs[:, :, 3] = 0.0  # 全フレーム token 3
+        result = greedy_decode(log_probs, blank_id=0)
+        assert result == [[3]]
+
+    def test_decode_returns_python_ints(self):
+        """戻り値が Python int のリスト (torch.Tensor ではない)。"""
+        log_probs = torch.full((2, 3, 5), -10.0)
+        log_probs[0, 0, 1] = 0.0
+        log_probs[0, 1, 0] = 0.0
+        log_probs[0, 2, 2] = 0.0
+        log_probs[1, :, 0] = 0.0  # all blank
+        result = greedy_decode(log_probs, blank_id=0)
+        for seq in result:
+            for token in seq:
+                assert isinstance(token, int)
+                assert not isinstance(token, torch.Tensor)

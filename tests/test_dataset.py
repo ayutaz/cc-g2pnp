@@ -222,3 +222,143 @@ class TestOutputFormat:
         results = _collect(ds, [_make_sample("音声合成")])
         pad_id = ds._vocab.pad_id
         assert pad_id not in results[0]["labels"]
+
+
+# ── LMDB Cache Tests ─────────────────────────────────────────────
+
+
+def _make_lmdb_cache(tmp_path, entries: dict[str, list[int]]):
+    """Create a temporary LMDB cache with the given text -> pnp_ids entries."""
+    from cc_g2pnp.data.lmdb_cache import PnPLabelCache
+
+    cache = PnPLabelCache(str(tmp_path / "cache"), readonly=False)
+    for text, pnp_ids in entries.items():
+        cache.put(text, pnp_ids)
+    cache.close()
+    return str(tmp_path / "cache")
+
+
+class TestLmdbCacheIntegration:
+    """Tests for LMDB cache integration in G2PnPDataset."""
+
+    def test_dataset_without_lmdb(self):
+        """lmdb_cache_dir=None のとき既存動作が維持される。"""
+        ds = _make_dataset()
+        assert ds._lmdb_cache is None
+        results = _collect(ds, [_make_sample("今日はいい天気")])
+        assert len(results) == 1
+        assert "input_ids" in results[0]
+        assert "labels" in results[0]
+
+    def test_dataset_with_lmdb_cache(self, tmp_path):
+        """キャッシュヒット時は generate_pnp_labels がバイパスされる。"""
+        # 実際の PnP ID を事前に生成してキャッシュへ格納
+        from cc_g2pnp.data.pnp_labeler import generate_pnp_labels
+        from cc_g2pnp.data.vocabulary import PnPVocabulary
+
+        text = "今日はいい天気"
+        vocab = PnPVocabulary()
+        pnp_tokens = generate_pnp_labels(text)
+        pnp_ids = vocab.encode(pnp_tokens)
+
+        cache_dir = _make_lmdb_cache(tmp_path, {text: pnp_ids})
+
+        ds = _make_dataset(lmdb_cache_dir=cache_dir)
+        assert ds._lmdb_cache is not None
+
+        with patch("cc_g2pnp.data.dataset.generate_pnp_labels") as mock_gen:
+            results = _collect(ds, [_make_sample(text)])
+
+        # キャッシュヒットなので generate_pnp_labels は呼ばれない
+        mock_gen.assert_not_called()
+        assert len(results) == 1
+        assert results[0]["labels"] == pnp_ids
+
+    def test_dataset_lmdb_cache_miss_fallback(self, tmp_path):
+        """キャッシュミス時は generate_pnp_labels にフォールバックする。"""
+        # キャッシュは別テキスト用エントリのみ持つ (miss を確定させる)
+        cache_dir = _make_lmdb_cache(tmp_path, {"別のテキスト": [1, 2, 3]})
+
+        ds = _make_dataset(lmdb_cache_dir=cache_dir)
+
+        with patch("cc_g2pnp.data.dataset.generate_pnp_labels", return_value=["k", "o"]) as mock_gen:
+            results = _collect(ds, [_make_sample("今日はいい天気")])
+
+        # キャッシュミスなので generate_pnp_labels が呼ばれる
+        mock_gen.assert_called_once()
+        assert len(results) == 1
+
+    def test_dataset_lmdb_cache_stats_logged(self, tmp_path, caplog):
+        """イテレーション完了後に LMDB 統計がログ出力される。"""
+        import logging
+
+        from cc_g2pnp.data.pnp_labeler import generate_pnp_labels
+        from cc_g2pnp.data.vocabulary import PnPVocabulary
+
+        text = "今日はいい天気"
+        vocab = PnPVocabulary()
+        pnp_ids = vocab.encode(generate_pnp_labels(text))
+        cache_dir = _make_lmdb_cache(tmp_path, {text: pnp_ids})
+
+        ds = _make_dataset(lmdb_cache_dir=cache_dir)
+        with caplog.at_level(logging.INFO, logger="cc_g2pnp.data.dataset"):
+            _collect(ds, [_make_sample(text)])
+
+        assert any("LMDB cache" in record.message for record in caplog.records)
+
+
+class TestBinaryLmdbCacheIntegration:
+    """Tests for binary format LMDB cache integration."""
+
+    def test_dataset_with_binary_lmdb_cache(self, tmp_path):
+        """bytes 形式の LMDB キャッシュでデータセットが正常に読取できる。"""
+        from cc_g2pnp.data.lmdb_cache import PnPLabelCache
+        from cc_g2pnp.data.pnp_labeler import generate_pnp_labels
+        from cc_g2pnp.data.vocabulary import PnPVocabulary
+
+        text = "今日はいい天気"
+        vocab = PnPVocabulary()
+        pnp_tokens = generate_pnp_labels(text)
+        pnp_ids = vocab.encode(pnp_tokens)
+
+        # PnPLabelCache.put() は新しい bytes 形式で書き込む
+        cache_dir = str(tmp_path / "binary_cache")
+        with PnPLabelCache(cache_dir, readonly=False) as cache:
+            cache.put(text, pnp_ids)
+
+        ds = _make_dataset(lmdb_cache_dir=cache_dir)
+        with patch("cc_g2pnp.data.dataset.generate_pnp_labels") as mock_gen:
+            results = _collect(ds, [_make_sample(text)])
+
+        mock_gen.assert_not_called()
+        assert len(results) == 1
+        assert results[0]["labels"] == pnp_ids
+
+    def test_dataset_with_legacy_json_lmdb_cache(self, tmp_path):
+        """レガシー JSON 形式の LMDB キャッシュでも後方互換で読取できる。"""
+        import json
+
+        import lmdb
+
+        from cc_g2pnp.data.pnp_labeler import generate_pnp_labels
+        from cc_g2pnp.data.vocabulary import PnPVocabulary
+
+        text = "今日はいい天気"
+        vocab = PnPVocabulary()
+        pnp_tokens = generate_pnp_labels(text)
+        pnp_ids = vocab.encode(pnp_tokens)
+
+        # レガシー JSON 形式で直接書込
+        cache_dir = str(tmp_path / "json_cache")
+        env = lmdb.open(cache_dir, map_size=10 * 1024**3)
+        with env.begin(write=True) as txn:
+            txn.put(text.encode("utf-8"), json.dumps(pnp_ids).encode("utf-8"))
+        env.close()
+
+        ds = _make_dataset(lmdb_cache_dir=cache_dir)
+        with patch("cc_g2pnp.data.dataset.generate_pnp_labels") as mock_gen:
+            results = _collect(ds, [_make_sample(text)])
+
+        mock_gen.assert_not_called()
+        assert len(results) == 1
+        assert results[0]["labels"] == pnp_ids

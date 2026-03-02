@@ -1,6 +1,10 @@
 """Tests for CALM2 tokenizer."""
 
+import pytest
+
 from cc_g2pnp.data.tokenizer import G2PnPTokenizer
+
+pytestmark = pytest.mark.network
 
 EXPECTED_VOCAB_SIZE = 65000
 
