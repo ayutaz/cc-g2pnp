@@ -250,8 +250,17 @@ class EvaluationPipeline:
 
         model = CC_G2PnP(model_config)
 
-        # Load model weights
-        model.load_state_dict(checkpoint["model_state_dict"])
+        # Load model weights — strip DDP "module." and torch.compile "_orig_mod." prefixes
+        state_dict = checkpoint["model_state_dict"]
+        cleaned: dict[str, object] = {}
+        for k, v in state_dict.items():
+            # Remove "module." (DDP) prefix
+            if k.startswith("module."):
+                k = k[len("module."):]
+            # Remove "_orig_mod." segments (torch.compile)
+            k = k.replace("._orig_mod.", ".")
+            cleaned[k] = v
+        model.load_state_dict(cleaned)
 
         vocab = PnPVocabulary()
         return EvaluationPipeline(model, vocab, cfg)

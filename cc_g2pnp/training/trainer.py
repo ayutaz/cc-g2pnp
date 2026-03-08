@@ -147,9 +147,9 @@ class Trainer:
         # 4b. torch.compile: FFN / ConvModule を個別にコンパイル (DDP wrap 前)
         if training_config.use_torch_compile:
             for layer in self.model.encoder.layers:
-                layer.ffn1 = torch.compile(layer.ffn1, mode="reduce-overhead")
-                layer.ffn2 = torch.compile(layer.ffn2, mode="reduce-overhead")
-                layer.conv = torch.compile(layer.conv, mode="reduce-overhead")
+                layer.ffn1 = torch.compile(layer.ffn1, mode="default")
+                layer.ffn2 = torch.compile(layer.ffn2, mode="default")
+                layer.conv = torch.compile(layer.conv, mode="default")
 
         # 5. DDP ラップ
         if training_config.use_ddp:

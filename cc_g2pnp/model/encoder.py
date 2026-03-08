@@ -107,9 +107,10 @@ class ConformerEncoder(nn.Module):
             else:
                 x = layer(x, pos_enc, mask)
 
-            if enable_intermediate_ctc and i in self._intermediate_ctc_layers:
+            if i in self._intermediate_ctc_layers:
                 inter_logits = self.ctc_projection(x)
-                intermediate_logits.append(inter_logits)
+                if enable_intermediate_ctc:
+                    intermediate_logits.append(inter_logits)
                 x = x + self.ctc_to_hidden(inter_logits)
 
         return {
