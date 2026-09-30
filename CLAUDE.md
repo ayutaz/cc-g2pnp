@@ -11,7 +11,7 @@ CC-G2PnP: ストリーミング対応 Conformer-CTC ベースの日本語 G2PnP 
 
 ```bash
 uv sync                              # 依存インストール
-uv run pytest                         # テスト実行 (688 件)
+uv run pytest                         # テスト実行 (689 件)
 uv run pytest tests/test_xxx.py       # 単一ファイルテスト
 uv run pytest tests/test_xxx.py -k "test_name"  # 単一テスト
 uv run ruff check                     # lint
@@ -49,7 +49,7 @@ torchrun --nproc_per_node=4 scripts/train.py --ddp --use-flash-attention --use-t
 
 - pytest markers: `slow`, `network`
 - `uv run pytest -m "not slow and not network"` でネットワーク不要テストのみ実行
-- 688 テスト (Phase 1-5 + FlashAttention SDPA + Phase 2-opt + SDPA速度修正 + P0+P1+Triton訓練高速化)
+- 689 テスト (Phase 1-5 + FlashAttention SDPA + Phase 2-opt + SDPA速度修正 + P0+P1+Triton訓練高速化)
 
 ## アーキテクチャ
 

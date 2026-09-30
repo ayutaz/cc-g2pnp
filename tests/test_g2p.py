@@ -2,6 +2,7 @@
 
 import fugashi
 import pyopenjtalk
+import pytest
 
 
 def test_g2p_romaji():
@@ -37,6 +38,7 @@ def test_fullcontext_has_accent_info():
     assert has_accent, "No /A: accent section found in full-context labels"
 
 
+@pytest.mark.network  # UniDic 辞書のダウンロード (`uv run python -m unidic download`) が必要
 def test_fugashi_tokenize():
     """fugashi should perform basic morphological analysis."""
     tagger = fugashi.Tagger()

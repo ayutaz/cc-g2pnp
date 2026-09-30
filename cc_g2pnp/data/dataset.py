@@ -174,7 +174,9 @@ class G2PnPDataset(IterableDataset):
 
     def close(self) -> None:
         """LMDB キャッシュをクローズしてリソースを解放する。"""
-        if self._lmdb_cache is not None:
+        # __init__ が途中で失敗した場合 (例: トークナイザ取得失敗) でも
+        # __del__ から安全に呼べるよう getattr で参照する
+        if getattr(self, "_lmdb_cache", None) is not None:
             self._lmdb_cache.close()
             self._lmdb_cache = None
 

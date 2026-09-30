@@ -29,6 +29,7 @@ def _create_parquet_dataset(base_dir: Path, subset: str, num_rows: int = 20) -> 
     return base_dir
 
 
+@pytest.mark.network  # G2PnPDataset が CALM2 トークナイザを HF Hub から取得する
 class TestLocalDatasetLoading:
     """Test G2PnPDataset with local Parquet files."""
 
@@ -162,6 +163,7 @@ class TestLocalDatasetLoading:
             assert a["labels"] == b["labels"]
 
 
+@pytest.mark.network  # G2PnPDataset が CALM2 トークナイザを HF Hub から取得する
 class TestTSVLoading:
     """Test G2PnPDataset TSV auto-download mode."""
 

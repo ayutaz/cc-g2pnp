@@ -21,6 +21,7 @@ def vocab():
 
 # ── Tokenizer + PnP labeler integration ──────────────────────────
 
+@pytest.mark.network  # tokenizer fixture が CALM2 トークナイザを HF Hub から取得する
 def test_tokenizer_pnp_pair(tokenizer, vocab):
     """Tokenizer and PnP labeler should produce valid paired output."""
     text = "今日はいい天気"
@@ -34,6 +35,7 @@ def test_tokenizer_pnp_pair(tokenizer, vocab):
     assert all(isinstance(i, int) for i in pnp_ids)
 
 
+@pytest.mark.network  # tokenizer fixture が CALM2 トークナイザを HF Hub から取得する
 def test_ctc_constraint_multiple(tokenizer, vocab):
     """CTC constraint should hold for a variety of texts."""
     texts = [
@@ -55,6 +57,7 @@ def test_ctc_constraint_multiple(tokenizer, vocab):
 
 # ── Collator tests ───────────────────────────────────────────────
 
+@pytest.mark.network  # tokenizer fixture が CALM2 トークナイザを HF Hub から取得する
 def test_collator_padding_shape(tokenizer, vocab):
     """Collator should pad to max length and produce correct shapes."""
     texts = ["こんにちは", "東京都に住んでいます", "天気"]
@@ -77,6 +80,7 @@ def test_collator_padding_shape(tokenizer, vocab):
     assert result["input_ids"].shape[1] == max_input
 
 
+@pytest.mark.network  # tokenizer fixture が CALM2 トークナイザを HF Hub から取得する
 def test_collator_lengths_match(tokenizer, vocab):
     """Recorded lengths should match the original unpadded lengths."""
     texts = ["音声", "自然言語処理は面白い"]
