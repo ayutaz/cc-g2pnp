@@ -1,4 +1,9 @@
-"""G2PnPDataset offline tests using mocks (no network access required)."""
+"""G2PnPDataset tests using mocked data streams.
+
+データストリーム (_load_stream) はモックするが、G2PnPDataset.__init__ で
+実際の CALM2 トークナイザを Hugging Face Hub から取得するため ``network`` マーカーを付与する
+(初回取得後は HF キャッシュがあればオフラインでも動作する)。
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,8 @@ from unittest.mock import patch
 import pytest
 
 from cc_g2pnp.data.dataset import G2PnPDataset
+
+pytestmark = pytest.mark.network
 
 # ── Helper ───────────────────────────────────────────────────────
 

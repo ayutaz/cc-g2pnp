@@ -61,7 +61,7 @@ cc_g2pnp/
 ├── training/               # 学習ループ
 │   ├── config.py           #   TrainingConfig
 │   ├── trainer.py          #   Trainer (AMP, GradScaler, DDP)
-│   ├── optimizer.py        #   AdamW + LinearLR warmup + ExponentialLR
+│   ├── optimizer.py        #   AdamW + LinearLR warmup + Cosine / Exponential LR
 │   ├── checkpoint.py       #   CheckpointManager (atomic save)
 │   ├── logger.py           #   TrainingLogger (W&B)
 │   ├── evaluator.py        #   Evaluator (PnP CER)
@@ -125,7 +125,7 @@ torchrun --nproc_per_node=N -m cc_g2pnp.cli --ddp
 | オプション | デフォルト | 説明 |
 |---|---|---|
 | `--lr` | `1e-4` | ピーク学習率 |
-| `--final-lr` | `1e-5` | 指数減衰の最終学習率 |
+| `--final-lr` | `1e-5` | スケジューラ終了時の最終学習率 |
 | `--weight-decay` | `0.01` | AdamW weight decay |
 | `--betas` | `0.9 0.98` | AdamW beta 係数 |
 | `--max-grad-norm` | `1.0` | 勾配クリッピング最大ノルム |
@@ -153,11 +153,11 @@ torchrun --nproc_per_node=N -m cc_g2pnp.cli --ddp
 | `--use-flash-attention` | (off) | SDPA 有効化 (推奨, T4 で 3.5x 高速化) |
 | `--use-torch-compile` | - | FFN+ConvModule を torch.compile で最適化 |
 | `--no-gradient-checkpointing` | - | Gradient checkpointing を無効化 |
-| `--sort-batch-buffer` | - | sorted dynamic batching のバッファサイズ |
+| `--sort-batch-buffer` | `10,000` | sorted dynamic batching のバッファサイズ (0 で無効) |
 | `--disable-intermediate-ctc-after` | - | 指定ステップ以降の中間CTC計算を省略 |
 | `--local-dataset-dir` | - | ローカルデータセットディレクトリ (Parquet/TSV) |
-| `--scheduler-type` | - | 学習率スケジューラの種類 |
-| `--gradient-accumulation-steps` | - | 勾配累積ステップ数 |
+| `--scheduler-type` | `cosine` | 学習率スケジューラの種類 (`cosine` / `exponential`) |
+| `--gradient-accumulation-steps` | `1` | 勾配累積ステップ数 |
 | `--pretrained-weights-only` | - | 事前学習重みのみロード (学習状態除外) |
 
 ### T4 GPU での学習
@@ -183,7 +183,7 @@ from cc_g2pnp.model import CC_G2PnP, CC_G2PnPConfig
 from cc_g2pnp.inference import StreamingInference
 
 model = CC_G2PnP(CC_G2PnPConfig())
-model.load_state_dict(torch.load("checkpoints/step_100000.pt")["model_state_dict"])
+model.load_state_dict(torch.load("checkpoints/step_00100000.pt")["model_state_dict"])
 model.eval()
 
 engine = StreamingInference(model)
@@ -204,7 +204,7 @@ from cc_g2pnp.evaluation import EvalConfig, EvalDataGenerator, EvaluationPipelin
 
 # チェックポイントからパイプライン構築
 pipeline = EvaluationPipeline.from_checkpoint(
-    "checkpoints/step_100000.pt",
+    "checkpoints/step_00100000.pt",
     config=EvalConfig(device="cuda"),
 )
 
@@ -219,8 +219,11 @@ print(pipeline.format_results(result))
 ## テスト
 
 ```bash
-# 全テスト実行 (688 件)
+# 全テスト実行 (689 件、network / slow マーカー付きテストは HF Hub 等へのアクセスや複数 GPU が必要)
 uv run pytest
+
+# ネットワーク不要なテストのみ実行 (CI と同じ)
+uv run pytest -m "not slow and not network"
 
 # lint チェック
 uv run ruff check

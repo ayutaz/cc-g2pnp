@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    name: ruff + pytest (CPU, offline tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+
+      # Python は .python-version (3.13)、PyTorch は uv.lock (CUDA 12.8 index) に従う。
+      # GPU が無いランナーでも CPU で動作する (CUDA / Triton / 複数 GPU 前提のテストは自動 skip)。
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Lint (ruff)
+        run: uv run ruff check
+
+      # network (HF Hub の CALM2 トークナイザ, ReazonSpeech, UniDic 辞書) と
+      # slow (複数 GPU DDP 等) マーカー付きテストは除外する。
+      - name: Test (pytest)
+        run: uv run pytest -m "not slow and not network"

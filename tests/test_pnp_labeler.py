@@ -1,5 +1,7 @@
 """Tests for PnP label generation from Japanese text."""
 
+import pytest
+
 from cc_g2pnp.data.pnp_labeler import generate_pnp_labels
 from cc_g2pnp.data.vocabulary import PnPVocabulary
 
@@ -59,6 +61,7 @@ def test_all_tokens_in_vocabulary():
             assert tok in vocab.token_to_id, f"Token {tok!r} not in vocabulary (text={text!r})"
 
 
+@pytest.mark.network  # G2PnPTokenizer が CALM2 トークナイザを HF Hub から取得する
 def test_ctc_constraint_basic():
     """Short texts should satisfy CTC constraint with typical BPE length."""
     # A single word typically has 1-3 BPE tokens and ~2-5 PnP labels.

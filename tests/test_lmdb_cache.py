@@ -219,3 +219,20 @@ def test_binary_format_long_key_hash(tmp_path):
         cache.put(long_text, pnp_ids)
         result = cache.get(long_text)
     assert result == pnp_ids
+
+
+def test_dataset_close_after_failed_init():
+    """__init__ が途中で失敗した G2PnPDataset でも close() / __del__ が例外を出さない。"""
+    from unittest.mock import patch
+
+    from cc_g2pnp.data.dataset import G2PnPDataset
+    from cc_g2pnp.data.tokenizer import G2PnPTokenizer
+
+    with (
+        patch.object(G2PnPTokenizer, "get_instance", side_effect=OSError("offline")),
+        pytest.raises(OSError, match="offline"),
+    ):
+        G2PnPDataset()
+
+    ds = G2PnPDataset.__new__(G2PnPDataset)  # _lmdb_cache 未設定の状態
+    ds.close()
